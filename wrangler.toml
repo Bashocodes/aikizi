@@ -1,15 +1,19 @@
 name = "aikizi-api"
 main = "src/worker/index.ts"
 compatibility_date = "2024-09-25"
+account_id = "10caedbcfcc1e6179107cde83789ac60"
 
 [vars]
+# keep comma-separated, no spaces needed
 CORS_ORIGIN = "https://aikizi.xyz,https://aikizi.com,http://localhost:5173"
+AI_PROVIDER = "gemini" # or "openai"
 
+# Let Wrangler manage your zone route
 [[routes]]
 pattern = "aikizi.xyz/v1/*"
 zone_name = "aikizi.xyz"
 
-# (keep this block commented until the .com moves to your main CF account)
+# Keep .com commented until transfer day
 # [[routes]]
 # pattern = "aikizi.com/v1/*"
 # zone_name = "aikizi.com"
