@@ -1,0 +1,326 @@
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { User, Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
+
+interface UserRecord {
+  id: string;
+  auth_id: string;
+  role: 'viewer' | 'pro' | 'publisher' | 'admin';
+  created_at: string;
+}
+
+interface AuthContextType {
+  user: User | null;
+  userRecord: UserRecord | null;
+  session: Session | null;
+  tokenBalance: number;
+  planName: string;
+  authReady: boolean;
+  isRefreshingBalance: boolean;
+  signInWithGoogle: () => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshTokenBalance: () => Promise<void>;
+}
+
+let toastTimeout: NodeJS.Timeout | null = null;
+
+function showToast(message: string) {
+  if (toastTimeout) clearTimeout(toastTimeout);
+
+  const existingToast = document.getElementById('auth-toast');
+  if (existingToast) existingToast.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'auth-toast';
+  toast.className = 'fixed top-4 right-4 z-[9999] bg-red-600 text-white px-6 py-3 rounded-lg shadow-lg font-semibold max-w-md';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  toastTimeout = setTimeout(() => {
+    toast.remove();
+  }, 5000);
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [tokenBalance, setTokenBalance] = useState(0);
+  const [planName, setPlanName] = useState('free');
+  const [authReady, setAuthReady] = useState(false);
+  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
+
+  const ensureAccount = async (retryCount = 0): Promise<boolean> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        console.warn('[Auth] No session available for ensure_account');
+        return false;
+      }
+
+      const response = await fetch('/v1/ensure-account', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.warn('[Auth] ensure_account endpoint error:', { error: data.error, retryCount });
+
+        if (retryCount === 0) {
+          console.log('[Auth] Retrying ensure_account after 500ms...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          return await ensureAccount(1);
+        }
+
+        showToast('Account setup couldn\'t complete. Reload and try again.');
+        return false;
+      }
+
+      console.log('[Auth] Account ensured successfully', { userId: data.userId, balance: data.balance });
+      if (data.balance !== undefined) {
+        setTokenBalance(data.balance);
+      }
+      return true;
+    } catch (err) {
+      console.warn('[Auth] ensure_account unexpected error:', { err, retryCount });
+
+      if (retryCount === 0) {
+        console.log('[Auth] Retrying ensure_account after 500ms...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return await ensureAccount(1);
+      }
+
+      showToast('Account setup couldn\'t complete. Reload and try again.');
+      return false;
+    }
+  };
+
+  const fetchUserRecord = async (authId: string) => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('auth_id', authId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('[Auth] Error fetching user record:', error);
+      return null;
+    }
+
+    return data;
+  };
+
+  const fetchTokenBalance = async (retryCount = 0): Promise<{ tokens_balance: number; plan_name: string }> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        console.warn('[Auth] No session available for get_balance');
+        return { tokens_balance: 0, plan_name: 'free' };
+      }
+
+      const response = await fetch('/v1/balance', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+
+      const responseData = await response.json();
+
+      if (!response.ok) {
+        console.warn('[Auth] get_balance endpoint error:', { error: responseData.error, retryCount });
+
+        if (retryCount < 2) {
+          console.log(`[Auth] Retrying balance fetch (attempt ${retryCount + 1}/2) in 2s...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          return fetchTokenBalance(retryCount + 1);
+        }
+
+        return { tokens_balance: 0, plan_name: 'free' };
+      }
+
+      const balance = responseData.balance ?? 0;
+      console.log('[Auth] Balance fetched', { balance, userId: responseData.userId });
+
+      const { data, error } = await supabase
+        .from('entitlements')
+        .select(`
+          user_id,
+          plans (name)
+        `)
+        .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Auth] Error fetching plan name:', error);
+      }
+
+      return {
+        tokens_balance: balance,
+        plan_name: (data?.plans as any)?.name || 'free'
+      };
+    } catch (err) {
+      console.error('[Auth] Unexpected error fetching token balance:', err);
+      return { tokens_balance: 0, plan_name: 'free' };
+    }
+  };
+
+  const refreshTokenBalance = async () => {
+    setIsRefreshingBalance(true);
+
+    try {
+      const balance = await fetchTokenBalance();
+      setTokenBalance(balance.tokens_balance);
+      setPlanName(balance.plan_name);
+      console.log('[Auth] Token balance refreshed:', balance.tokens_balance);
+    } catch (err) {
+      console.error('[Auth] Error refreshing token balance:', err);
+    } finally {
+      setIsRefreshingBalance(false);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: 'https://aikizi.xyz/auth/callback',
+      },
+    });
+
+    if (error) {
+      console.error('[Auth] Error signing in:', error);
+      throw error;
+    }
+  };
+
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error('[Auth] Error signing out:', error);
+      throw error;
+    }
+    setUser(null);
+    setUserRecord(null);
+    setSession(null);
+    setTokenBalance(0);
+    setPlanName('free');
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    console.log('[Auth Boot] Origin:', window.location.origin, 'URL:', window.location.href);
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
+
+      console.log('[Auth] INITIAL_SESSION:', session ? `user.id=${session.user.id}` : 'no session');
+
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session?.user) {
+        (async () => {
+          // First, ensure account is provisioned
+          const accountReady = await ensureAccount();
+          if (!isMounted || !accountReady) return;
+
+          // Then fetch user record
+          const userData = await fetchUserRecord(session.user.id);
+          if (!isMounted) return;
+          setUserRecord(userData);
+
+          // Finally fetch balance
+          const balance = await fetchTokenBalance();
+          if (!isMounted) return;
+          setTokenBalance(balance.tokens_balance);
+          setPlanName(balance.plan_name);
+        })();
+      }
+
+      setAuthReady(true);
+      console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      (async () => {
+        if (!isMounted) return;
+
+        console.log('[Auth] onAuthStateChange:', event, session ? `user.id=${session.user.id}` : 'no session');
+
+        setSession(session);
+        setUser(session?.user ?? null);
+
+        if (session?.user) {
+          // For SIGNED_IN event, ensure account is provisioned first
+          if (event === 'SIGNED_IN') {
+            console.log('[Auth] SIGNED_IN event detected, ensuring account...');
+            const accountReady = await ensureAccount();
+            if (!isMounted || !accountReady) return;
+            console.log('[Auth] Account ensured, fetching balance...');
+          }
+
+          // Fetch user record
+          const userData = await fetchUserRecord(session.user.id);
+          if (!isMounted) return;
+          setUserRecord(userData);
+
+          // Fetch balance and update header badge
+          const balance = await fetchTokenBalance();
+          if (!isMounted) return;
+          setTokenBalance(balance.tokens_balance);
+          setPlanName(balance.plan_name);
+          console.log('[Auth] Token balance updated in state:', balance.tokens_balance);
+        } else {
+          setUserRecord(null);
+          setTokenBalance(0);
+          setPlanName('free');
+        }
+
+        if (!authReady) {
+          setAuthReady(true);
+          console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
+        }
+      })();
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        userRecord,
+        session,
+        tokenBalance,
+        planName,
+        authReady,
+        isRefreshingBalance,
+        signInWithGoogle,
+        signOut,
+        refreshTokenBalance,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
