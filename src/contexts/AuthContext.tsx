@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
 
 interface UserRecord {
   id: string;
@@ -60,17 +61,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
-      const response = await fetch('/v1/ensure-account', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-      });
-
-      const data = await response.json();
+      const response = await api.post('/ensure-account');
 
       if (!response.ok) {
-        console.warn('[Auth] ensure_account endpoint error:', { error: data.error, retryCount });
+        console.warn('[Auth] ensure_account endpoint error:', { error: response.error, retryCount });
 
         if (retryCount === 0) {
           console.log('[Auth] Retrying ensure_account after 500ms...');
@@ -82,10 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
-      console.log('[Auth] Account ensured successfully', { userId: data.userId, balance: data.balance });
-      if (data.balance !== undefined) {
-        setTokenBalance(data.balance);
-      }
+      console.log('[Auth] Account ensured successfully', { userId: response.user_id });
       return true;
     } catch (err) {
       console.warn('[Auth] ensure_account unexpected error:', { err, retryCount });
@@ -124,17 +115,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { tokens_balance: 0, plan_name: 'free' };
       }
 
-      const response = await fetch('/v1/balance', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-      });
-
-      const responseData = await response.json();
+      const response = await api.get('/balance');
 
       if (!response.ok) {
-        console.warn('[Auth] get_balance endpoint error:', { error: responseData.error, retryCount });
+        console.warn('[Auth] get_balance endpoint error:', { error: response.error, retryCount });
 
         if (retryCount < 2) {
           console.log(`[Auth] Retrying balance fetch (attempt ${retryCount + 1}/2) in 2s...`);
@@ -145,8 +129,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { tokens_balance: 0, plan_name: 'free' };
       }
 
-      const balance = responseData.balance ?? 0;
-      console.log('[Auth] Balance fetched', { balance, userId: responseData.userId });
+      const balance = response.balance ?? 0;
+      console.log('[Auth] Balance fetched', { balance });
 
       const { data, error } = await supabase
         .from('entitlements')

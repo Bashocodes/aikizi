@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { api } from '../lib/api';
 import { Lock, Unlock, Bookmark, Copy, CheckCircle } from 'lucide-react';
 
 interface PostDetail {
@@ -128,21 +129,12 @@ export function PostDetailPage() {
         return;
       }
 
-      const response = await fetch('/v1/sref/unlock', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          post_id: postId,
-        }),
+      const response = await api.post('/sref/unlock', {
+        post_id: postId,
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        alert(data.error || 'Failed to unlock SREF code');
+        alert(response.error || 'Failed to unlock SREF code');
         return;
       }
 
@@ -153,7 +145,7 @@ export function PostDetailPage() {
         ...prev,
         sref_codes: prev.sref_codes ? {
           ...prev.sref_codes,
-          code_encrypted: data.code
+          code_encrypted: response.code
         } : null
       } : null);
     } catch (error) {

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
 import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle } from 'lucide-react';
 
 interface DecodeResult {
@@ -73,33 +74,30 @@ export function DecodePage() {
       });
 
       const idemKey = `decode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const response = await fetch('/v1/decode', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-          'idem-key': idemKey,
-        },
-        body: JSON.stringify({
+      const response = await api.post('/decode',
+        {
           image_url: imageDataUrl,
           model: selectedModel,
-        }),
-      });
-
-      const data = await response.json();
+        },
+        {
+          headers: {
+            'idem-key': idemKey,
+          },
+        }
+      );
 
       if (!response.ok) {
-        console.error('[DecodePage] Decode failed', { error: data.error });
-        if (data.error?.includes('insufficient')) {
+        console.error('[DecodePage] Decode failed', { error: response.error });
+        if (response.error?.includes('insufficient')) {
           setInsufficientTokens(true);
         } else {
-          alert(data.error || 'Failed to decode image. Please try again.');
+          alert(response.error || 'Failed to decode image. Please try again.');
         }
         await refreshTokenBalance();
         return;
       }
 
-      setResult(data.normalized);
+      setResult(response.normalized);
 
       console.log('[DecodePage] Decode successful, refreshing token balance');
       await refreshTokenBalance();
