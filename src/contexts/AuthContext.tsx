@@ -226,14 +226,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     console.log('[Auth Boot] Origin:', window.location.origin, 'URL:', window.location.href);
 
-    const processAuthState = async (session: Session | null, event: string) => {
+    const initAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!isMounted) return;
+
+      setSession(session);
+      setUser(session?.user ?? null);
+      setAuthReady(true);
+      notifyApiAuthReady();
+
+      console.log('[Auth] Initial getSession done, authReady=true', session ? `user.id=${session.user.id}` : 'no session');
+
+      if (session?.user) {
+        (async () => {
+          const shouldEnsureAccount = !sessionStorage.getItem(`ensure:${session.user.id}`);
+
+          if (shouldEnsureAccount) {
+            console.log('[Auth] Initial session: Ensuring account...');
+            const accountReady = await ensureAccount(session.user.id);
+            if (!isMounted || !accountReady) return;
+          }
+
+          const userData = await fetchUserRecord(session.user.id);
+          if (!isMounted) return;
+          setUserRecord(userData);
+
+          const balance = await fetchTokenBalance();
+          if (!isMounted) return;
+          setTokenBalance(balance.tokens_balance);
+          setPlanName(balance.plan_name);
+          console.log('[Auth] Initial balance loaded:', balance.tokens_balance);
+        })();
+      }
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isMounted) return;
 
       const now = Date.now();
       const sessionId = session?.user?.id || null;
 
       if (sessionId && sessionId === processingSessionRef.current && now - lastEventTimeRef.current < 2000) {
-        console.log('[Auth] Debouncing duplicate event:', event, 'for session:', sessionId);
+        console.log('[Auth] Debounce: skipped duplicate', event, 'for user:', sessionId);
         return;
       }
 
@@ -242,61 +279,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         lastEventTimeRef.current = now;
       }
 
-      console.log('[Auth] Processing auth state:', event, session ? `user.id=${session.user.id}` : 'no session');
+      console.log('[Auth] onAuthStateChange:', event, session ? `user.id=${session.user.id}` : 'no session');
 
       setSession(session);
       setUser(session?.user ?? null);
 
       if (session?.user) {
-        const shouldEnsureAccount =
-          event === 'SIGNED_IN' ||
-          (event === 'INITIAL_SESSION' && !userRecord);
+        (async () => {
+          const shouldEnsureAccount = event === 'SIGNED_IN';
 
-        if (shouldEnsureAccount) {
-          console.log(`[Auth] ${event}: Ensuring account...`);
-          const accountReady = await ensureAccount(session.user.id);
-
-          if (!isMounted || !accountReady) {
-            if (!authReady) {
-              setAuthReady(true);
-              notifyApiAuthReady();
-              console.log('[Auth] authReady=true (account setup failed)');
-            }
-            return;
+          if (shouldEnsureAccount) {
+            console.log('[Auth] SIGNED_IN: Ensuring account...');
+            const accountReady = await ensureAccount(session.user.id);
+            if (!isMounted || !accountReady) return;
           }
-          console.log('[Auth] Account ensured');
-        }
 
-        const userData = await fetchUserRecord(session.user.id);
-        if (!isMounted) return;
-        setUserRecord(userData);
+          const userData = await fetchUserRecord(session.user.id);
+          if (!isMounted) return;
+          setUserRecord(userData);
 
-        const balance = await fetchTokenBalance();
-        if (!isMounted) return;
-        setTokenBalance(balance.tokens_balance);
-        setPlanName(balance.plan_name);
-        console.log('[Auth] Token balance updated:', balance.tokens_balance);
+          const balance = await fetchTokenBalance();
+          if (!isMounted) return;
+          setTokenBalance(balance.tokens_balance);
+          setPlanName(balance.plan_name);
+          console.log('[Auth] Balance updated:', balance.tokens_balance);
+        })();
       } else {
         setUserRecord(null);
         setTokenBalance(0);
         setPlanName('free');
       }
-
-      if (!authReady) {
-        setAuthReady(true);
-        notifyApiAuthReady();
-        console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
-      }
-    };
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!isMounted) return;
-      processAuthState(session, 'INITIAL_SESSION');
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!isMounted) return;
-      processAuthState(session, event);
     });
 
     return () => {

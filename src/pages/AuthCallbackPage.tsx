@@ -28,8 +28,8 @@ export function AuthCallbackPage() {
       try {
         console.log('[Auth Callback] Waiting for Supabase auto-parse (detectSessionInUrl)...');
 
-        const maxAttempts = 25;
-        const pollInterval = 200;
+        const maxAttempts = 33;
+        const pollInterval = 150;
         let attempts = 0;
 
         while (attempts < maxAttempts) {
@@ -48,7 +48,12 @@ export function AuthCallbackPage() {
 
             window.history.replaceState({}, '', dest);
 
-            navigate(dest, { replace: true });
+            try {
+              navigate(dest, { replace: true });
+            } catch (err) {
+              console.warn('[Auth Callback] Router navigation failed, using hard redirect:', err);
+              window.location.replace(dest);
+            }
             return;
           }
 
@@ -106,7 +111,7 @@ export function AuthCallbackPage() {
           AIKIZI
         </div>
         <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gray-900 dark:border-white"></div>
-        <p className="text-gray-600 dark:text-gray-400 mt-2">Completing sign-in...</p>
+        <p className="text-gray-600 dark:text-gray-400 mt-2">Signing you in...</p>
       </div>
     </div>
   );
