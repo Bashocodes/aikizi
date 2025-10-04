@@ -5,25 +5,19 @@ import { cors } from '../lib/cors';
 import type { Env } from '../types';
 
 export async function ensureAccount(env: Env, req: Request) {
-  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
-  const authJwt = authHeader?.replace('Bearer ', '').replace('bearer ', '');
-
-  if (!authJwt) {
-    console.log('[FN ensure-account] No auth header found');
-    return bad('auth required', 401);
+  let user;
+  try {
+    const authResult = await requireUser(env, req);
+    user = authResult.user;
+  } catch (error) {
+    if (error instanceof Response) {
+      return cors(error);
+    }
+    console.error('[FN ensure-account] Unexpected auth error:', error);
+    return cors(bad('auth required', 401));
   }
 
-  console.log('[FN ensure-account] Auth header present, token len:', authJwt.length);
-
-  const authClient = supa(env, authJwt);
-  const { data: user, error: authError } = await authClient.auth.getUser();
-
-  if (authError || !user?.user) {
-    console.log('[FN ensure-account] Auth verification failed:', authError?.message);
-    return bad('auth required', 401);
-  }
-
-  const auth_id = user.user.id;
+  const auth_id = user.id;
   console.log('[FN ensure-account] User authenticated:', auth_id);
 
   const dbClient = supa(env);
