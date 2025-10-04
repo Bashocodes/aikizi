@@ -10,6 +10,7 @@ type Body = {
   mimeType?: string;
   imageUrl?: string;
   model?: string;
+  input_media_id?: string;
 };
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
@@ -160,22 +161,32 @@ Return ONLY valid JSON, no markdown formatting.`;
   const ms = Date.now() - startTime;
   console.log(`${logPrefix} Success ms=${ms}`);
 
-  await dbClient.from('decodes').insert({
-    user_id: userData.id,
-    input_media_id: null,
-    model: model,
-    raw_json: { text },
-    normalized_json: { content: text },
-    cost_tokens: 1,
-    private: true
-  });
+  const { data: decodeRecord, error: insertError } = await dbClient
+    .from('decodes')
+    .insert({
+      user_id: userData.id,
+      input_media_id: body.input_media_id || null,
+      model: model,
+      raw_json: { text },
+      normalized_json: { content: text },
+      cost_tokens: 1,
+      private: true
+    })
+    .select()
+    .single();
+
+  if (insertError) {
+    console.error(`${logPrefix} Failed to save decode:`, insertError);
+  }
 
   return cors(json({
     success: true,
     result: {
       content: text,
       tokensUsed: 1
-    }
+    },
+    decodeId: decodeRecord?.id,
+    private: true
   }));
 }
 

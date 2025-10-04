@@ -3,7 +3,7 @@ import { json, bad } from './lib/json';
 import { preflight, allowOrigin } from './lib/cors';
 import { ensureAccount, balance } from './routes/account';
 import { spend } from './routes/wallet';
-import { directUpload, ensureVariants } from './routes/images';
+import { directUpload, ensureVariants, ingestComplete } from './routes/images';
 import { decode } from './routes/decode';
 import { publish } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
@@ -38,7 +38,9 @@ export default {
       } else if (pathname === '/v1/spend' && req.method==='POST') {
         response = allowOrigin(env, req, await spend(env, req));
       } else if (pathname === '/v1/images/direct-upload' && req.method==='POST') {
-        response = allowOrigin(env, req, await directUpload(env));
+        response = allowOrigin(env, req, await directUpload(env, req));
+      } else if (pathname === '/v1/images/ingest-complete' && req.method==='POST') {
+        response = allowOrigin(env, req, await ingestComplete(env, req));
       } else if (pathname === '/v1/images/ensure-variants' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureVariants(env, req));
       } else if (pathname === '/v1/decode' && req.method==='POST') {
