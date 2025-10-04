@@ -53,6 +53,8 @@ export default {
         response = allowOrigin(env, req, await search(env, req));
       } else if (pathname === '/v1/debug/auth' && req.method==='GET') {
         response = allowOrigin(env, req, await debugAuth(env, req, reqId));
+      } else if (pathname === '/v1/debug/decode' && req.method==='GET') {
+        response = allowOrigin(env, req, await debugDecode(env, req, reqId));
       } else {
         response = allowOrigin(env, req, bad('not found', 404));
       }
@@ -100,5 +102,26 @@ async function debugAuth(env: Env, req: Request, reqId: string): Promise<Respons
   return json({
     hasAuthHeader,
     userId: authResult.user.id
+  });
+}
+
+async function debugDecode(env: Env, req: Request, reqId: string): Promise<Response> {
+  const { requireUser } = await import('./lib/auth');
+
+  try {
+    await requireUser(env, req, reqId);
+  } catch (e: any) {
+    if (e instanceof Response) {
+      return e;
+    }
+    return json({ error: 'auth failed' }, 401);
+  }
+
+  const aiProvider = env.AI_PROVIDER || 'openai';
+
+  return json({
+    ok: true,
+    mode: 'sync',
+    aiProvider
   });
 }

@@ -3,15 +3,22 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { api } from '../lib/api';
-import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X } from 'lucide-react';
+import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X, Copy } from 'lucide-react';
 
 interface DecodeResult {
-  style_triplet: string;
-  artist_oneword: string | null;
+  styleCodes: string[];
+  tags: string[];
   subjects: string[];
-  tokens: string[];
-  prompt_short: string;
-  sref_hint: string | null;
+  prompts: {
+    story: string;
+    mix: string;
+    expand: string;
+    sound: string;
+  };
+  meta: {
+    model: string;
+    latencyMs: number;
+  };
 }
 
 type DecodeStatus = 'queued' | 'running' | 'normalizing' | 'saving' | 'completed' | 'failed' | 'canceled';
@@ -37,6 +44,8 @@ export function DecodePage() {
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [consecutive401s, setConsecutive401s] = useState(0);
+  const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
+  const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const navigate = useNavigate();
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -238,7 +247,7 @@ export function DecodePage() {
 
       const response = await api.post('/decode',
         {
-          image_url: imageDataUrl,
+          imageUrl: imageDataUrl,
           model: selectedModel,
         },
         {
@@ -263,10 +272,10 @@ export function DecodePage() {
           } else {
             setDecodeError('Authorization failed. Retrying...');
           }
-        } else if (response.error?.includes('insufficient')) {
+        } else if (response.error?.includes('insufficient') || response.error?.includes('NO_TOKENS')) {
           setInsufficientTokens(true);
           setConsecutive401s(0);
-        } else if (response.error?.includes('timeout') || response.error?.includes('took too long')) {
+        } else if (response.error?.includes('timeout') || response.error?.includes('DECODE_TIMEOUT')) {
           setDecodeError('The model took too long. Please try again.');
           setConsecutive401s(0);
         } else {
@@ -287,9 +296,9 @@ export function DecodePage() {
         setJobId(response.jobId);
         setDecodeStatus('queued');
         pollDecodeStatus(response.jobId);
-      } else if (response.normalized) {
-        console.log('[DecodePage] POST /v1/decode result: 200 (fast-path)');
-        setResult(response.normalized);
+      } else if (response.result) {
+        console.log('[DecodePage] POST /v1/decode result: 200 (sync)');
+        setResult(response.result);
         setIsDecoding(false);
         setDecodeStatus('completed');
         await refreshTokenBalance();
@@ -584,11 +593,25 @@ export function DecodePage() {
           {result && (
             <div className="space-y-6">
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Style Triplet</h3>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mb-4">{result.style_triplet}</p>
-                {result.artist_oneword && (
-                  <p className="text-gray-700 dark:text-gray-300">Artist: {result.artist_oneword}</p>
-                )}
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Style Codes</h3>
+                <div className="flex flex-wrap gap-2">
+                  {result.styleCodes.map((code, i) => (
+                    <span key={i} className="px-4 py-2 bg-gradient-to-r from-gray-900 to-gray-800 dark:from-white dark:to-gray-100 text-white dark:text-gray-900 rounded-lg font-mono text-sm">
+                      {code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Tags</h3>
+                <div className="flex flex-wrap gap-2">
+                  {result.tags.map((tag, i) => (
+                    <span key={i} className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
               </div>
 
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
@@ -603,27 +626,45 @@ export function DecodePage() {
               </div>
 
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Tokens</h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.tokens.map((token, i) => (
-                    <span key={i} className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm">
-                      #{token}
-                    </span>
-                  ))}
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">Prompts</h3>
+                  <div className="flex gap-2">
+                    {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActivePromptTab(tab)}
+                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
+                          activePromptTab === tab
+                            ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
+                            : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="relative">
+                  <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
+                    {result.prompts[activePromptTab]}
+                  </p>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(result.prompts[activePromptTab]);
+                      setCopiedPrompt(activePromptTab);
+                      setTimeout(() => setCopiedPrompt(null), 2000);
+                    }}
+                    className="absolute top-0 right-0 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                    title="Copy to clipboard"
+                  >
+                    {copiedPrompt === activePromptTab ? (
+                      <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                    ) : (
+                      <Copy className="w-5 h-5" />
+                    )}
+                  </button>
                 </div>
               </div>
-
-              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Description</h3>
-                <p className="text-gray-900 dark:text-white leading-relaxed">{result.prompt_short}</p>
-              </div>
-
-              {result.sref_hint && (
-                <div className="backdrop-blur-lg bg-gradient-to-r from-gray-900/90 to-gray-800/90 dark:from-white/90 dark:to-gray-100/90 rounded-xl p-6 border border-gray-700 dark:border-gray-300">
-                  <h3 className="text-sm font-semibold text-white dark:text-gray-900 uppercase mb-2">SREF Hint</h3>
-                  <code className="text-white dark:text-gray-900 font-mono">{result.sref_hint}</code>
-                </div>
-              )}
 
               {isPublisher && (
                 <>

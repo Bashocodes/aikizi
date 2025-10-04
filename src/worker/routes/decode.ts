@@ -3,12 +3,13 @@ import { supa } from '../lib/supa';
 import { idemKey } from '../lib/idem';
 import { cors } from '../lib/cors';
 import { requireUser } from '../lib/auth';
+import { callAIProvider } from '../lib/ai-providers';
 import type { Env } from '../types';
 
-type Body = { image_url: string, model?: string };
+type Body = { imageUrl?: string, image_url?: string, fileId?: string, model?: string };
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
-const DECODE_TIMEOUT_MS = 60000;
+const DECODE_TIMEOUT_MS = 55000;
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
@@ -63,9 +64,10 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     return cors(bad('invalid request body', 400));
   }
 
-  if (!body?.image_url) {
-    console.log(`${logPrefix} Missing image_url`);
-    return cors(bad('image_url required', 400));
+  const imageUrl = body?.imageUrl || body?.image_url;
+  if (!imageUrl) {
+    console.log(`${logPrefix} Missing imageUrl`);
+    return cors(bad('imageUrl required', 400));
   }
 
   const model = body.model || 'gpt-5';
@@ -74,16 +76,19 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     return cors(bad(`model must be one of: ${ALLOWED_MODELS.join(', ')}`, 400));
   }
 
-  console.log(`${logPrefix} Starting decode with model=${model}`);
+  const aiProvider = model.startsWith('gpt-') ? 'openai' : 'gemini';
+  console.log(`${logPrefix} Starting decode model=${model} provider=${aiProvider}`);
 
-  let normalized;
+  const startTime = Date.now();
+  let result;
+
   try {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
 
     try {
-      normalized = await Promise.race([
-        performDecode(body.image_url, model, env),
+      result = await Promise.race([
+        callAIProvider(imageUrl, model, env),
         new Promise((_, reject) => {
           abortController.signal.addEventListener('abort', () => {
             reject(new Error('DECODE_TIMEOUT'));
@@ -94,42 +99,32 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error.message === 'DECODE_TIMEOUT') {
-        console.log(`${logPrefix} decodeOutcome=TIMEOUT`);
-        return cors(json({ ok: false, error: 'decode timeout', code: 'DECODE_TIMEOUT' }, 504));
+        console.log(`${logPrefix} decodeOutcome=TIMEOUT ms=${Date.now() - startTime}`);
+        return cors(json({ ok: false, error: 'DECODE_TIMEOUT', code: 'DECODE_TIMEOUT' }, 504));
       }
       throw error;
     }
   } catch (error: any) {
-    console.error(`${logPrefix} decodeOutcome=FAILED error=${error.message}`);
-    return cors(json({ ok: false, error: 'decode failed', code: 'DECODE_FAILED' }, 500));
+    const ms = Date.now() - startTime;
+    console.error(`${logPrefix} decodeOutcome=PROVIDER_ERROR ms=${ms} error=${error.message}`);
+    return cors(json({ ok: false, error: 'PROVIDER_ERROR', code: 'PROVIDER_ERROR', detailsMasked: true }, 502));
   }
 
   const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
 
-  await dbClient.from('decodes').insert({
+  const { data: decodeRecord } = await dbClient.from('decodes').insert({
     user_id: userData?.id || null,
     input_media_id: null,
     model: model,
     raw_json: {},
-    normalized_json: normalized,
+    normalized_json: result,
     cost_tokens: 1,
     private: true
-  });
+  }).select('id').single();
 
-  console.log(`${logPrefix} decodeOutcome=OK`);
+  const ms = Date.now() - startTime;
+  console.log(`${logPrefix} decodeOutcome=OK userId=${user.id} model=${model} provider=${aiProvider} ms=${ms}`);
 
-  return cors(json({ ok: true, normalized }));
+  return cors(json({ ok: true, decodeId: decodeRecord?.id, result }));
 }
 
-async function performDecode(imageUrl: string, model: string, env: Env): Promise<any> {
-  return {
-    style_triplet: 'Sample Style • Modern • Clean',
-    artist_oneword: 'Contemporary',
-    subjects: ['abstract', 'geometric'],
-    tokens: ['minimalist', 'modern', 'clean'],
-    prompt_short: 'A modern abstract composition with clean geometric forms',
-    sref_hint: '--sref 1234567890',
-    model_used: model,
-    seo_snippet: 'Modern abstract style'
-  };
-}
