@@ -2,6 +2,7 @@ import { json, bad } from '../lib/json';
 import { supa } from '../lib/supa';
 import { idemKey } from '../lib/idem';
 import { cors } from '../lib/cors';
+import { requireUser } from '../lib/auth';
 import type { Env } from '../types';
 
 type Body = { image_url: string, model?: string };
@@ -13,25 +14,17 @@ export async function decode(env: Env, req: Request) {
     return cors(new Response(null, { status: 200 }));
   }
 
-  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
-  const authJwt = authHeader?.replace('Bearer ', '').replace('bearer ', '');
-
-  if (!authJwt) {
-    console.log('[FN decode] No auth header found');
+  let user;
+  try {
+    const authResult = await requireUser(env, req);
+    user = authResult.user;
+  } catch (error) {
+    if (error instanceof Response) {
+      return cors(error);
+    }
+    console.error('[FN decode] Unexpected auth error:', error);
     return cors(bad('auth required', 401));
   }
-
-  console.log('[FN decode] Auth header present, token len:', authJwt.length);
-
-  const authClient = supa(env, authJwt);
-  const { data: user, error: authError } = await authClient.auth.getUser();
-
-  if (authError || !user?.user) {
-    console.log('[FN decode] Auth verification failed:', authError?.message);
-    return cors(bad('auth required', 401));
-  }
-
-  console.log('[FN decode] User authenticated:', user.user.id);
 
   const key = idemKey(req);
   if (!key) {
@@ -67,7 +60,7 @@ export async function decode(env: Env, req: Request) {
     seo_snippet: 'Modern abstract style'
   };
 
-  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.user.id).single();
+  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
 
   await dbClient.from('decodes').insert({
     user_id: userData?.id || null,
@@ -79,7 +72,7 @@ export async function decode(env: Env, req: Request) {
     private: true
   });
 
-  console.log('[FN decode] Decode successful for user:', user.user.id);
+  console.log('[FN decode] Decode successful for user:', user.id);
 
   return cors(json({ ok: true, normalized }));
 }

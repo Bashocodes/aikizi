@@ -1,5 +1,7 @@
 import { supa } from '../lib/supa';
 import { json, bad } from '../lib/json';
+import { requireUser } from '../lib/auth';
+import { cors } from '../lib/cors';
 import type { Env } from '../types';
 
 export async function ensureAccount(env: Env, req: Request) {
@@ -50,33 +52,28 @@ export async function ensureAccount(env: Env, req: Request) {
 }
 
 export async function balance(env: Env, req: Request) {
-  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
-  const authJwt = authHeader?.replace('Bearer ', '').replace('bearer ', '');
-
-  if (!authJwt) {
-    console.log('[FN balance] No auth header found');
-    return bad('auth required', 401);
+  let user;
+  try {
+    const authResult = await requireUser(env, req);
+    user = authResult.user;
+  } catch (error) {
+    if (error instanceof Response) {
+      return cors(error);
+    }
+    console.error('[FN balance] Unexpected auth error:', error);
+    return cors(bad('auth required', 401));
   }
-
-  console.log('[FN balance] Auth header present, token len:', authJwt.length);
-
-  const authClient = supa(env, authJwt);
-  const { data: user, error: authError } = await authClient.auth.getUser();
-
-  if (authError || !user?.user) {
-    console.log('[FN balance] Auth verification failed:', authError?.message);
-    return bad('auth required', 401);
-  }
-
-  console.log('[FN balance] User authenticated:', user.user.id);
 
   const dbClient = supa(env);
-  const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', user.user.id).single();
+  const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', user.id).single();
 
   if (error || !data) {
-    console.log('[FN balance] User not found:', user.user.id);
-    return bad('not found', 404);
+    console.log('[FN balance] User not found:', user.id);
+    return cors(bad('not found', 404));
   }
 
-  return json({ ok: true, balance: data.entitlements?.tokens_balance || 0 });
+  const entitlements = data.entitlements as any;
+  const balance = Array.isArray(entitlements) ? entitlements[0]?.tokens_balance : entitlements?.tokens_balance;
+
+  return cors(json({ ok: true, balance: balance || 0 }));
 }

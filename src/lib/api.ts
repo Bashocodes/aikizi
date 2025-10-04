@@ -62,6 +62,7 @@ export async function apiCall<T = any>(
     const response = await fetch(url, {
       ...options,
       headers,
+      credentials: 'include',
     });
 
     const data = await response.json();
@@ -80,6 +81,7 @@ export async function apiCall<T = any>(
         }
 
         console.log('[API] Token refreshed successfully, retrying request...');
+        console.log('[API]', options.method || 'GET', endpoint, '(retry)');
         return apiCall<T>(endpoint, options, true);
       }
 
