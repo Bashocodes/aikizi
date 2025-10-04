@@ -16,10 +16,11 @@ function generateReqId(): string {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const reqId = generateReqId();
-    const { pathname, searchParams } = new URL(req.url);
+    const { pathname } = new URL(req.url);
+    const cleanPath = pathname.replace(/\/+$/, '');
     const hasAuthHeader = !!req.headers.get('authorization');
 
-    console.log(`[${reqId}] ${req.method} ${pathname} hasAuth=${hasAuthHeader}`);
+    console.log(`[${reqId}] ${req.method} path=${cleanPath} hasAuth=${hasAuthHeader}`);
 
     if (req.method === 'OPTIONS') {
       console.log(`[${reqId}] OPTIONS preflight`);
@@ -29,34 +30,36 @@ export default {
     try {
       let response: Response;
 
-      if (pathname === '/v1/health') {
+      if (cleanPath === '/v1/health') {
         response = allowOrigin(env, req, json({ ok:true }));
-      } else if (pathname === '/v1/ensure-account' && req.method==='POST') {
+      } else if (cleanPath === '/v1/ensure-account' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureAccount(env, req));
-      } else if (pathname === '/v1/balance' && req.method==='GET') {
+      } else if (cleanPath === '/v1/balance' && req.method==='GET') {
         response = allowOrigin(env, req, await balance(env, req, reqId));
-      } else if (pathname === '/v1/spend' && req.method==='POST') {
+      } else if (cleanPath === '/v1/spend' && req.method==='POST') {
         response = allowOrigin(env, req, await spend(env, req));
-      } else if (pathname === '/v1/images/direct-upload' && req.method==='POST') {
+      } else if (cleanPath === '/v1/images/direct-upload' && req.method==='POST') {
         response = allowOrigin(env, req, await directUpload(env, req));
-      } else if (pathname === '/v1/images/ingest-complete' && req.method==='POST') {
+      } else if (cleanPath === '/v1/images/ingest-complete' && req.method==='POST') {
         response = allowOrigin(env, req, await ingestComplete(env, req));
-      } else if (pathname === '/v1/images/ensure-variants' && req.method==='POST') {
+      } else if (cleanPath === '/v1/images/ensure-variants' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureVariants(env, req));
-      } else if (pathname === '/v1/decode' && req.method==='POST') {
+      } else if (cleanPath === '/v1/decode' && req.method==='POST') {
         response = allowOrigin(env, req, await decode(env, req, reqId));
-      } else if (pathname === '/v1/publish' && req.method==='POST') {
+      } else if (cleanPath === '/v1/publish' && req.method==='POST') {
         response = allowOrigin(env, req, await publish(env, req));
-      } else if (pathname === '/v1/sref/upload' && req.method==='POST') {
+      } else if (cleanPath === '/v1/sref/upload' && req.method==='POST') {
         response = allowOrigin(env, req, await srefUpload(env, req));
-      } else if (pathname === '/v1/sref/unlock' && req.method==='POST') {
+      } else if (cleanPath === '/v1/sref/unlock' && req.method==='POST') {
         response = allowOrigin(env, req, await srefUnlock(env, req));
-      } else if (pathname === '/v1/search' && req.method==='GET') {
+      } else if (cleanPath === '/v1/search' && req.method==='GET') {
         response = allowOrigin(env, req, await search(env, req));
-      } else if (pathname === '/v1/debug/auth' && req.method==='GET') {
+      } else if (cleanPath === '/v1/debug/auth' && req.method==='GET') {
         response = allowOrigin(env, req, await debugAuth(env, req, reqId));
-      } else if (pathname === '/v1/debug/decode' && req.method==='GET') {
+      } else if (cleanPath === '/v1/debug/decode' && req.method==='GET') {
         response = allowOrigin(env, req, await debugDecode(env, req, reqId));
+      } else if (cleanPath.startsWith('/v1/images/')) {
+        response = allowOrigin(env, req, bad('images route not matched', 404));
       } else {
         response = allowOrigin(env, req, bad('not found', 404));
       }
