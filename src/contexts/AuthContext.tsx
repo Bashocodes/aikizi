@@ -132,22 +132,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const balance = response.balance ?? 0;
       console.log('[Auth] Balance fetched', { balance });
 
-      const { data, error } = await supabase
-        .from('entitlements')
-        .select(`
-          user_id,
-          plans (name)
-        `)
-        .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
-        .maybeSingle();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.id) {
+        const { data, error } = await supabase
+          .from('entitlements')
+          .select(`
+            user_id,
+            plans (name)
+          `)
+          .eq('user_id', user.id)
+          .maybeSingle();
 
-      if (error) {
-        console.error('[Auth] Error fetching plan name:', error);
+        if (error) {
+          console.error('[Auth] Error fetching plan name:', error);
+        }
+
+        return {
+          tokens_balance: balance,
+          plan_name: (data as any)?.plans?.name || 'free'
+        };
       }
 
       return {
         tokens_balance: balance,
-        plan_name: (data?.plans as any)?.name || 'free'
+        plan_name: 'free'
       };
     } catch (err) {
       console.error('[Auth] Unexpected error fetching token balance:', err);
@@ -199,55 +207,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let isMounted = true;
+    let isProcessing = false; // Prevent duplicate processing
 
     console.log('[Auth Boot] Origin:', window.location.origin, 'URL:', window.location.href);
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!isMounted) return;
-
-      console.log('[Auth] INITIAL_SESSION:', session ? `user.id=${session.user.id}` : 'no session');
-
-      setSession(session);
-      setUser(session?.user ?? null);
-
-      if (session?.user) {
-        (async () => {
-          // First, ensure account is provisioned
-          const accountReady = await ensureAccount();
-          if (!isMounted || !accountReady) {
-            setAuthReady(true);
-            notifyApiAuthReady();
-            console.log('[Auth] authReady=true (account setup failed)');
-            return;
-          }
-
-          // Then fetch user record
-          const userData = await fetchUserRecord(session.user.id);
-          if (!isMounted) return;
-          setUserRecord(userData);
-
-          // Finally fetch balance
-          const balance = await fetchTokenBalance();
-          if (!isMounted) return;
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-
-          setAuthReady(true);
-          notifyApiAuthReady();
-          console.log('[Auth] authReady=true', `user.id=${session.user.id}`);
-        })();
-      } else {
-        setAuthReady(true);
-        notifyApiAuthReady();
-        console.log('[Auth] authReady=true (no user)');
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      (async () => {
-        if (!isMounted) return;
-
-        console.log('[Auth] onAuthStateChange:', event, session ? `user.id=${session.user.id}` : 'no session');
+    const processAuthState = async (session: Session | null, event?: string) => {
+      if (!isMounted || isProcessing) return;
+      
+      isProcessing = true;
+      
+      try {
+        console.log('[Auth] Processing auth state:', event || 'INITIAL', session ? `user.id=${session.user.id}` : 'no session');
 
         setSession(session);
         setUser(session?.user ?? null);
@@ -258,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             console.log('[Auth] SIGNED_IN event detected, ensuring account...');
             const accountReady = await ensureAccount();
             if (!isMounted || !accountReady) {
+              isProcessing = false;
               if (!authReady) {
                 setAuthReady(true);
                 notifyApiAuthReady();
@@ -266,6 +237,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               return;
             }
             console.log('[Auth] Account ensured, fetching balance...');
+          } else if (event === 'INITIAL_SESSION' && !userRecord) {
+            // For initial session, only ensure account if we don't have user record yet
+            console.log('[Auth] INITIAL_SESSION detected, ensuring account...');
+            const accountReady = await ensureAccount();
+            if (!isMounted || !accountReady) {
+              isProcessing = false;
+              if (!authReady) {
+                setAuthReady(true);
+                notifyApiAuthReady();
+                console.log('[Auth] authReady=true (account setup failed in INITIAL_SESSION)');
+              }
+              return;
+            }
+            console.log('[Auth] Account ensured for initial session...');
           }
 
           // Fetch user record
@@ -290,7 +275,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           notifyApiAuthReady();
           console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
         }
-      })();
+      } finally {
+        isProcessing = false;
+      }
+    };
+
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
+      processAuthState(session);
+    });
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      processAuthState(session, event);
     });
 
     return () => {
