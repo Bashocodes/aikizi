@@ -96,11 +96,9 @@ async function debugAuth(env: Env, req: Request, reqId: string): Promise<Respons
 
   const h = req.headers.get('authorization') || req.headers.get('Authorization') || '';
   const hasAuthHeader = !!h;
-  const tokenLen = authResult.token.length;
 
   return json({
     hasAuthHeader,
-    tokenLen,
     userId: authResult.user.id
   });
 }
