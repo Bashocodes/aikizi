@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { api } from '../lib/api';
+import { api, apiFetch } from '../lib/api';
 import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X } from 'lucide-react';
 
 interface DecodeResult {
@@ -317,12 +317,8 @@ export function DecodePage() {
         .replace(/[^a-z0-9-]/g, '')
         .slice(0, 50) + '-' + Date.now();
 
-      const response = await fetch('/.netlify/functions/publish-post', {
+      const data = await apiFetch('publish-post', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
         body: JSON.stringify({
           title: result.style_triplet,
           slug,
@@ -338,9 +334,7 @@ export function DecodePage() {
         }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
+      if (data.ok === false) {
         const errorMsg = data.details ? `${data.error}: ${data.details}` : data.error;
         alert(errorMsg || 'Failed to publish post');
         return;

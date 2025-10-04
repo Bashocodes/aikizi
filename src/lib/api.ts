@@ -1,8 +1,6 @@
 import { supabase } from './supabase';
 
-// API base URL - defaults to same origin /v1 for production on aikizi.xyz
-// Can be overridden with VITE_API_BASE_URL for local dev or testing
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/v1';
+const API_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
 export interface ApiError {
   ok: false;
@@ -33,13 +31,12 @@ async function waitForAuth(): Promise<void> {
 }
 
 /**
- * Make an authenticated API call to the Worker
+ * Make an authenticated API call to Supabase Edge Functions
  */
-export async function apiCall<T = any>(
-  endpoint: string,
-  options: RequestInit = {},
-  isRetry = false
-): Promise<ApiResponse<T>> {
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {}
+): Promise<any> {
   try {
     await waitForAuth();
 
@@ -47,30 +44,33 @@ export async function apiCall<T = any>(
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...(options.headers as Record<string, string>),
+      ...(init.headers as Record<string, string>),
     };
 
     if (session?.access_token) {
       headers['Authorization'] = `Bearer ${session.access_token}`;
     } else {
-      console.warn('[API] No access token available for request:', endpoint);
+      console.warn('[API] No access token available for request:', path);
     }
 
-    const url = `${API_BASE}${endpoint}`;
-    console.log('[API]', options.method || 'GET', url, { hasToken: !!session?.access_token });
+    const url = `${API_BASE}/${path}`;
+    const method = init.method || 'GET';
+    console.log('[API]', method, path, { hasToken: !!session?.access_token });
 
     const response = await fetch(url, {
-      ...options,
+      ...init,
       headers,
       credentials: 'include',
     });
 
-    const data = await response.json();
+    console.log('[API]', method, path, `status:${response.status}`);
+
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       console.warn('[API] Error response:', { status: response.status, error: data.error });
 
-      if (response.status === 401 && !isRetry) {
+      if (response.status === 401) {
         console.log('[API] 401 detected, attempting token refresh and retry...');
 
         const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
@@ -81,14 +81,31 @@ export async function apiCall<T = any>(
         }
 
         console.log('[API] Token refreshed successfully, retrying request...');
-        console.log('[API]', options.method || 'GET', endpoint, '(retry)');
-        return apiCall<T>(endpoint, options, true);
+
+        const retryHeaders = {
+          ...headers,
+          'Authorization': `Bearer ${refreshData.session.access_token}`,
+        };
+
+        const retryResponse = await fetch(url, {
+          ...init,
+          headers: retryHeaders,
+          credentials: 'include',
+        });
+
+        console.log('[API]', method, path, `status:${retryResponse.status} (retry)`);
+        const retryData = await retryResponse.json().catch(() => ({}));
+
+        if (!retryResponse.ok) {
+          return { ok: false, error: retryData.error || `Request failed with status ${retryResponse.status}` };
+        }
+
+        return retryData;
       }
 
       return { ok: false, error: data.error || `Request failed with status ${response.status}` };
     }
 
-    console.log('[API] Success:', data);
     return data;
   } catch (error) {
     console.error('[API] Unexpected error:', error);
@@ -98,14 +115,15 @@ export async function apiCall<T = any>(
 
 /**
  * Convenience methods for common HTTP verbs
+ * @deprecated Use apiFetch directly
  */
 export const api = {
-  get: <T = any>(endpoint: string, options?: RequestInit) =>
-    apiCall<T>(endpoint, { ...options, method: 'GET' }),
+  get: (path: string, options?: RequestInit) =>
+    apiFetch(path, { ...options, method: 'GET' }),
 
-  post: <T = any>(endpoint: string, body?: any, options?: RequestInit) => {
+  post: (path: string, body?: any, options?: RequestInit) => {
     const { headers, ...restOptions } = options || {};
-    return apiCall<T>(endpoint, {
+    return apiFetch(path, {
       ...restOptions,
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
@@ -116,13 +134,13 @@ export const api = {
     });
   },
 
-  put: <T = any>(endpoint: string, body?: any, options?: RequestInit) =>
-    apiCall<T>(endpoint, {
+  put: (path: string, body?: any, options?: RequestInit) =>
+    apiFetch(path, {
       ...options,
       method: 'PUT',
       body: body ? JSON.stringify(body) : undefined,
     }),
 
-  delete: <T = any>(endpoint: string, options?: RequestInit) =>
-    apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
+  delete: (path: string, options?: RequestInit) =>
+    apiFetch(path, { ...options, method: 'DELETE' }),
 };
