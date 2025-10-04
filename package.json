@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "dev:functions": "supabase functions serve --env-file ./supabase/.env.local"
+    "dev:worker": "wrangler dev src/worker/index.ts",
+    "deploy:worker": "wrangler deploy src/worker/index.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
