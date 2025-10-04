@@ -44,6 +44,21 @@ function showToast(message: string) {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+export async function getAccessToken(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      console.log('[Auth] Access token fetched, len:', session.access_token.length);
+      return session.access_token;
+    }
+    console.warn('[Auth] No access token available');
+    return null;
+  } catch (error) {
+    console.error('[Auth] Error fetching access token:', error);
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);

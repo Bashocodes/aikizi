@@ -101,12 +101,18 @@ export const api = {
   get: <T = any>(endpoint: string, options?: RequestInit) =>
     apiCall<T>(endpoint, { ...options, method: 'GET' }),
 
-  post: <T = any>(endpoint: string, body?: any, options?: RequestInit) =>
-    apiCall<T>(endpoint, {
-      ...options,
+  post: <T = any>(endpoint: string, body?: any, options?: RequestInit) => {
+    const { headers, ...restOptions } = options || {};
+    return apiCall<T>(endpoint, {
+      ...restOptions,
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
-    }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(headers as Record<string, string> || {}),
+      },
+    });
+  },
 
   put: <T = any>(endpoint: string, body?: any, options?: RequestInit) =>
     apiCall<T>(endpoint, {
