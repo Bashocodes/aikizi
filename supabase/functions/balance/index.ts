@@ -1,11 +1,11 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { requireUser } from '../_shared/auth.ts';
-import { withCORS, corsHeaders } from '../_shared/cors.ts';
+import { withCORS, preflight } from '../_shared/cors.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 200, headers: corsHeaders() });
+    return preflight(req);
   }
 
   try {
@@ -26,10 +26,9 @@ serve(async (req) => {
     if (error || !data) {
       console.log('[FN balance] User not found:', user.id);
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'not found' }),
-          { status: 404, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -41,22 +40,20 @@ serve(async (req) => {
     console.log('[FN balance] Returning balance for user:', user.id, balance || 0);
 
     return withCORS(
-      new Response(
-        JSON.stringify({ ok: true, balance: balance || 0 }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      )
+      JSON.stringify({ ok: true, balance: balance || 0 }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   } catch (error) {
     if (error instanceof Response) {
-      return withCORS(error);
+      return withCORS(error.body, { status: error.status, headers: error.headers }, req);
     }
 
     console.error('[FN balance] Unexpected error:', error);
     return withCORS(
-      new Response(
-        JSON.stringify({ error: 'internal server error' }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      )
+      JSON.stringify({ error: 'internal server error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   }
 });

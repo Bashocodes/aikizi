@@ -1,11 +1,11 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { requireUser } from '../_shared/auth.ts';
-import { withCORS, corsHeaders } from '../_shared/cors.ts';
+import { withCORS, preflight } from '../_shared/cors.ts';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 200, headers: corsHeaders() });
+    return preflight(req);
   }
 
   try {
@@ -21,10 +21,9 @@ serve(async (req) => {
 
     if (!jobId) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'id parameter required' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'id parameter required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -38,10 +37,9 @@ serve(async (req) => {
 
     if (!userData) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'user not found' }),
-          { status: 404, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'user not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -54,10 +52,9 @@ serve(async (req) => {
 
     if (jobError || !job) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'job not found' }),
-          { status: 404, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'job not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -72,10 +69,9 @@ serve(async (req) => {
       await supabase.rpc('refund_tokens', { p_user_id: userData.id, p_amount: 1 });
 
       return withCORS(
-        new Response(
-          JSON.stringify({ status: 'canceled' }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ status: 'canceled' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -92,22 +88,20 @@ serve(async (req) => {
     console.log('[FN decode-status] Job status:', job.status, 'for job:', jobId);
 
     return withCORS(
-      new Response(JSON.stringify(response), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
+      JSON.stringify(response),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   } catch (error) {
     if (error instanceof Response) {
-      return withCORS(error);
+      return withCORS(error.body, { status: error.status, headers: error.headers }, req);
     }
 
     console.error('[FN decode-status] Unexpected error:', error);
     return withCORS(
-      new Response(
-        JSON.stringify({ error: 'internal server error' }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      )
+      JSON.stringify({ error: 'internal server error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   }
 });

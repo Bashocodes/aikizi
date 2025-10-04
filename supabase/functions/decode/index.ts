@@ -1,13 +1,13 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { requireUser } from '../_shared/auth.ts';
-import { withCORS, corsHeaders } from '../_shared/cors.ts';
+import { withCORS, preflight } from '../_shared/cors.ts';
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 200, headers: corsHeaders() });
+    return preflight(req);
   }
 
   try {
@@ -22,19 +22,17 @@ serve(async (req) => {
 
     if (!image_url) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'image_url required' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'image_url required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
     if (!ALLOWED_MODELS.includes(model)) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: `model must be one of: ${ALLOWED_MODELS.join(', ')}` }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: `model must be one of: ${ALLOWED_MODELS.join(', ')}` }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -50,10 +48,9 @@ serve(async (req) => {
 
     if (!userData) {
       return withCORS(
-        new Response(
-          JSON.stringify({ error: 'user not found' }),
-          { status: 404, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({ error: 'user not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -65,14 +62,13 @@ serve(async (req) => {
     if (spendError) {
       console.log('[FN decode] Spend tokens failed:', spendError.message);
       return withCORS(
-        new Response(
-          JSON.stringify({
-            error: spendError.message.includes('insufficient')
-              ? 'insufficient tokens'
-              : 'spend failed',
-          }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        )
+        JSON.stringify({
+          error: spendError.message.includes('insufficient')
+            ? 'insufficient tokens'
+            : 'spend failed',
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+        req
       );
     }
 
@@ -100,22 +96,20 @@ serve(async (req) => {
     console.log('[FN decode] Decode successful for user:', user.id);
 
     return withCORS(
-      new Response(
-        JSON.stringify({ ok: true, normalized }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      )
+      JSON.stringify({ ok: true, normalized }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   } catch (error) {
     if (error instanceof Response) {
-      return withCORS(error);
+      return withCORS(error.body, { status: error.status, headers: error.headers }, req);
     }
 
     console.error('[FN decode] Unexpected error:', error);
     return withCORS(
-      new Response(
-        JSON.stringify({ error: 'internal server error' }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      )
+      JSON.stringify({ error: 'internal server error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+      req
     );
   }
 });

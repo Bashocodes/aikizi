@@ -44,6 +44,7 @@ export async function apiFetch(
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
       ...(init.headers as Record<string, string>),
     };
 
@@ -60,7 +61,7 @@ export async function apiFetch(
     const response = await fetch(url, {
       ...init,
       headers,
-      credentials: 'include',
+      credentials: 'omit',
     });
 
     console.log('[API]', method, path, `status:${response.status}`);
@@ -90,7 +91,7 @@ export async function apiFetch(
         const retryResponse = await fetch(url, {
           ...init,
           headers: retryHeaders,
-          credentials: 'include',
+          credentials: 'omit',
         });
 
         console.log('[API]', method, path, `status:${retryResponse.status} (retry)`);

@@ -1,21 +1,42 @@
-export function withCORS(res: Response): Response {
-  const headers = new Headers(res.headers);
-  headers.set('Access-Control-Allow-Origin', 'https://aikizi.xyz');
-  headers.set('Access-Control-Allow-Headers', 'authorization, content-type, x-supabase-auth, apikey, x-client-info');
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  headers.set('Access-Control-Max-Age', '86400');
+export function corsHeaders(origin: string | null): Record<string, string> {
+  const allowed = new Set([
+    'https://aikizi.xyz',
+    'https://www.aikizi.xyz',
+    'http://localhost:5173',
+  ]);
 
-  return new Response(res.body, {
-    status: res.status,
-    statusText: res.statusText,
-    headers,
-  });
+  const allowOrigin = origin && allowed.has(origin) ? origin : 'https://aikizi.xyz';
+
+  console.log('[CORS] origin=', origin, 'allow=', allowOrigin);
+
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info, x-supabase-auth',
+    'Vary': 'Origin',
+  };
 }
 
-export function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': 'https://aikizi.xyz',
-    'Access-Control-Allow-Headers': 'authorization, content-type, x-supabase-auth, apikey, x-client-info',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  };
+export function preflight(req: Request): Response {
+  const headers = corsHeaders(req.headers.get('origin'));
+  return new Response(null, { status: 204, headers });
+}
+
+export function withCORS(
+  body: BodyInit | null,
+  init: ResponseInit,
+  req: Request
+): Response {
+  const corsH = corsHeaders(req.headers.get('origin'));
+  const headers = new Headers(init.headers || {});
+
+  Object.entries(corsH).forEach(([key, value]) => {
+    headers.set(key, value);
+  });
+
+  return new Response(body, {
+    ...init,
+    headers,
+  });
 }
