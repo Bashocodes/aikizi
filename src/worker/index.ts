@@ -114,7 +114,10 @@ async function debugAuth(env: Env, req: Request, reqId: string): Promise<Respons
   }
 
   const origin = req.headers.get('origin') || '';
-  const allowedOrigins = (env.CORS_ORIGIN || '').split(',').map(o => o.trim());
+const allowedOrigins = (env.CORS_ORIGIN || "").split(",");
+if (!allowedOrigins.includes(request.headers.get("Origin") || "")) {
+  return new Response(JSON.stringify({ ok: false, error: "CORS not allowed" }), { status: 403 });
+}
   const originAllowed = allowedOrigins.includes(origin);
 
   return json({
