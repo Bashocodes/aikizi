@@ -73,56 +73,34 @@ export default {
 }
 
 async function debugAuth(env: Env, req: Request, reqId: string): Promise<Response> {
-  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization') || '';
-  const hasAuthHeader = !!authHeader;
-  const headerPrefix = authHeader.split(' ')[0] || null;
+  const { requireUser, requireAdmin } = await import('./lib/auth');
 
-  const m = /^Bearer\s+(.+)$/i.exec(authHeader);
-  const token = m ? m[1] : null;
-  const tokenLen = token?.length || 0;
-
-  let userId: string | null = null;
-  let authOutcome = 'NO_HEADER';
-  let issHost = 'unknown';
-  let envHost = 'unknown';
-  let projectMatch = false;
-
-  if (token) {
-    try {
-      const base64Payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-      const payload = JSON.parse(atob(base64Payload));
-
-      if (payload.iss) {
-        issHost = new URL(payload.iss).host;
-      }
-      if (env.SUPABASE_URL) {
-        envHost = new URL(env.SUPABASE_URL).host;
-      }
-      projectMatch = issHost === envHost && issHost !== 'unknown';
-
-      const { requireUser, requireAdmin } = await import('./lib/auth');
-      const authResult = await requireUser(env, req, reqId);
-      userId = authResult.user.id;
-      authOutcome = 'OK';
-
-      await requireAdmin(env, userId, reqId);
-    } catch (e: any) {
-      if (e instanceof Response) {
-        return e;
-      } else {
-        authOutcome = 'INVALID';
-      }
+  let authResult;
+  try {
+    authResult = await requireUser(env, req, reqId);
+  } catch (e: any) {
+    if (e instanceof Response) {
+      return e;
     }
+    return json({ error: 'auth failed' }, 401);
   }
+
+  try {
+    await requireAdmin(env, authResult.user.id, reqId);
+  } catch (e: any) {
+    if (e instanceof Response) {
+      return e;
+    }
+    return json({ error: 'forbidden' }, 403);
+  }
+
+  const h = req.headers.get('authorization') || req.headers.get('Authorization') || '';
+  const hasAuthHeader = !!h;
+  const tokenLen = authResult.token.length;
 
   return json({
     hasAuthHeader,
-    headerPrefix,
     tokenLen,
-    issHost: issHost.slice(0, 20) + (issHost.length > 20 ? '...' : ''),
-    envHost: envHost.slice(0, 20) + (envHost.length > 20 ? '...' : ''),
-    projectMatch,
-    userId,
-    authOutcome
+    userId: authResult.user.id
   });
 }
