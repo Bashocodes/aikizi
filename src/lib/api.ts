@@ -59,7 +59,7 @@ export async function apiCall<T = any>(
     }
 
     const url = `${API_BASE}${endpoint}`;
-    const timeout = endpoint === '/decode' ? 45000 : 15000;
+    const timeout = endpoint === '/decode' ? 60000 : 15000;
 
     console.log('[API]', options.method || 'GET', url, { hasToken: true, timeout });
 

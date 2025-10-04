@@ -1,15 +1,14 @@
 import { json, bad } from '../lib/json';
 import { supa } from '../lib/supa';
-import { idemKey } from '../lib/idem';
 import { cors } from '../lib/cors';
 import { requireUser } from '../lib/auth';
 import { callAIProvider } from '../lib/ai-providers';
 import type { Env } from '../types';
 
-type Body = { imageUrl?: string, image_url?: string, fileId?: string, model?: string };
+type Body = { imageUrl: string; model?: string };
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
-const DECODE_TIMEOUT_MS = 55000;
+const DECODE_TIMEOUT_MS = 50000;
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
@@ -31,49 +30,59 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     return cors(bad('auth required', 401));
   }
 
-  const key = idemKey(req);
-  if (!key) {
-    console.log(`${logPrefix} Missing idem-key header`);
-    return cors(bad('idem-key required', 400));
-  }
-
   const dbClient = supa(env);
-  const spend = await dbClient.rpc('spend_tokens', { p_cost: 1, p_idem_key: key });
+  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
 
-  if (spend.error) {
-    console.log(`${logPrefix} Spend tokens failed: ${spend.error.message}`);
-    const errorCode = spend.error.message.includes('insufficient') ? 'NO_TOKENS' : 'SPEND_FAILED';
-    const statusCode = errorCode === 'NO_TOKENS' ? 402 : 400;
-    return cors(json({ ok: false, error: spend.error.message.includes('insufficient') ? 'insufficient tokens' : 'spend failed', code: errorCode }, statusCode));
+  if (!userData) {
+    console.log(`${logPrefix} User not found in DB`);
+    return cors(json({ ok: false, error: 'auth required' }, 401));
   }
+
+  const { data: entitlementData } = await dbClient
+    .from('entitlements')
+    .select('tokens_balance')
+    .eq('user_id', userData.id)
+    .single();
+
+  if (!entitlementData || entitlementData.tokens_balance < 1) {
+    console.log(`${logPrefix} Insufficient tokens balance=${entitlementData?.tokens_balance || 0}`);
+    return cors(json({ ok: false, error: 'insufficient tokens' }, 402));
+  }
+
+  const { error: spendError } = await dbClient
+    .from('entitlements')
+    .update({ tokens_balance: entitlementData.tokens_balance - 1 })
+    .eq('user_id', userData.id);
+
+  if (spendError) {
+    console.error(`${logPrefix} Failed to spend token: ${spendError.message}`);
+    return cors(json({ ok: false, error: 'internal error' }, 500));
+  }
+
+  console.log(`${logPrefix} Spent 1 token, new balance=${entitlementData.tokens_balance - 1}`);
 
   let body: Body;
   try {
-    const contentType = req.headers.get('content-type') || '';
-    if (contentType.includes('multipart/form-data') || contentType.includes('application/x-www-form-urlencoded')) {
-      const formData = await req.formData();
-      body = {
-        image_url: formData.get('image_url') as string || '',
-        model: formData.get('model') as string || undefined,
-      };
-    } else {
-      body = await req.json() as Body;
-    }
+    body = await req.json() as Body;
   } catch (e) {
     console.log(`${logPrefix} Failed to parse body:`, e);
-    return cors(bad('invalid request body', 400));
+    await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ ok: false, error: 'invalid input' }, 422));
   }
 
-  const imageUrl = body?.imageUrl || body?.image_url;
+  const imageUrl = body?.imageUrl;
   if (!imageUrl) {
     console.log(`${logPrefix} Missing imageUrl`);
-    return cors(bad('imageUrl required', 400));
+    await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ ok: false, error: 'invalid input' }, 422));
   }
 
-  const model = body.model || 'gpt-5';
+  const defaultModel = (env.AI_PROVIDER === 'openai') ? 'gpt-5-mini' : 'gemini-2.5-flash';
+  const model = body.model || defaultModel;
   if (!ALLOWED_MODELS.includes(model)) {
     console.log(`${logPrefix} Invalid model: ${model}`);
-    return cors(bad(`model must be one of: ${ALLOWED_MODELS.join(', ')}`, 400));
+    await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ ok: false, error: 'invalid input' }, 422));
   }
 
   const aiProvider = model.startsWith('gpt-') ? 'openai' : 'gemini';
@@ -99,25 +108,36 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error.message === 'DECODE_TIMEOUT') {
-        console.log(`${logPrefix} decodeOutcome=TIMEOUT ms=${Date.now() - startTime}`);
-        return cors(json({ ok: false, error: 'DECODE_TIMEOUT', code: 'DECODE_TIMEOUT' }, 504));
+        const ms = Date.now() - startTime;
+        console.log(`${logPrefix} decodeOutcome=TIMEOUT ms=${ms}`);
+        await refundToken(dbClient, userData.id, logPrefix);
+        return cors(json({ ok: false, error: 'decode timeout' }, 504));
       }
       throw error;
     }
   } catch (error: any) {
     const ms = Date.now() - startTime;
     console.error(`${logPrefix} decodeOutcome=PROVIDER_ERROR ms=${ms} error=${error.message}`);
-    return cors(json({ ok: false, error: 'PROVIDER_ERROR', code: 'PROVIDER_ERROR', detailsMasked: true }, 502));
+    await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ ok: false, error: 'internal error' }, 500));
   }
 
-  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
+  const normalized = {
+    styleCodes: result.styleCodes || [],
+    tags: result.tags || [],
+    subjects: result.subjects || [],
+    story: result.prompts?.story || '',
+    mix: result.prompts?.mix || '',
+    expand: result.prompts?.expand || '',
+    sound: result.prompts?.sound || ''
+  };
 
   const { data: decodeRecord } = await dbClient.from('decodes').insert({
-    user_id: userData?.id || null,
+    user_id: userData.id,
     input_media_id: null,
     model: model,
-    raw_json: {},
-    normalized_json: result,
+    raw_json: result,
+    normalized_json: normalized,
     cost_tokens: 1,
     private: true
   }).select('id').single();
@@ -125,6 +145,33 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   const ms = Date.now() - startTime;
   console.log(`${logPrefix} decodeOutcome=OK userId=${user.id} model=${model} provider=${aiProvider} ms=${ms}`);
 
-  return cors(json({ ok: true, decodeId: decodeRecord?.id, result }));
+  return cors(json({
+    ok: true,
+    decode: {
+      id: decodeRecord?.id || null,
+      model: model,
+      normalized: normalized,
+      spentTokens: 1
+    }
+  }));
 }
 
+async function refundToken(dbClient: any, userId: string, logPrefix: string): Promise<void> {
+  try {
+    const { data, error } = await dbClient
+      .from('entitlements')
+      .select('tokens_balance')
+      .eq('user_id', userId)
+      .single();
+
+    if (!error && data) {
+      await dbClient
+        .from('entitlements')
+        .update({ tokens_balance: data.tokens_balance + 1 })
+        .eq('user_id', userId);
+      console.log(`${logPrefix} Refunded 1 token`);
+    }
+  } catch (e) {
+    console.error(`${logPrefix} Refund error:`, e);
+  }
+}

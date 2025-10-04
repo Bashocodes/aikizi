@@ -9,19 +9,13 @@ interface DecodeResult {
   styleCodes: string[];
   tags: string[];
   subjects: string[];
-  prompts: {
-    story: string;
-    mix: string;
-    expand: string;
-    sound: string;
-  };
-  meta: {
-    model: string;
-    latencyMs: number;
-  };
+  story: string;
+  mix: string;
+  expand: string;
+  sound: string;
 }
 
-type DecodeStatus = 'queued' | 'running' | 'normalizing' | 'saving' | 'completed' | 'failed' | 'canceled';
+type DecodeStatus = 'idle' | 'decoding' | 'done' | 'error';
 
 const MODEL_OPTIONS = [
   { label: 'GPT-5 (default)', value: 'gpt-5' },
@@ -40,14 +34,12 @@ export function DecodePage() {
   const [result, setResult] = useState<DecodeResult | null>(null);
   const [publishedPostId, setPublishedPostId] = useState<string | null>(null);
   const [insufficientTokens, setInsufficientTokens] = useState(false);
-  const [decodeStatus, setDecodeStatus] = useState<DecodeStatus | null>(null);
+  const [decodeStatus, setDecodeStatus] = useState<DecodeStatus>('idle');
   const [decodeError, setDecodeError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [consecutive401s, setConsecutive401s] = useState(0);
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
+  const [spentTokens, setSpentTokens] = useState<number>(0);
   const navigate = useNavigate();
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
@@ -69,9 +61,6 @@ export function DecodePage() {
 
   useEffect(() => {
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -89,101 +78,11 @@ export function DecodePage() {
       setPreviewUrl(URL.createObjectURL(file));
       setResult(null);
       setDecodeError(null);
-      setDecodeStatus(null);
-      setJobId(null);
-      setConsecutive401s(0);
+      setDecodeStatus('idle');
+      setSpentTokens(0);
     }
   };
 
-  const stopPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-  };
-
-  const pollDecodeStatus = async (id: string) => {
-    let attempts = 0;
-    const maxAttempts = 120;
-
-    const poll = async () => {
-      attempts++;
-
-      try {
-        const response = await api.get(`/decode-status?id=${id}`);
-
-        if (!response.ok) {
-          console.error('[DecodePage] Poll status error:', response.error);
-          if (attempts > 5) {
-            stopPolling();
-            setDecodeError('Unable to check decode status. Please try again.');
-            setIsDecoding(false);
-            setDecodeStatus(null);
-          }
-          return;
-        }
-
-        console.log('[DecodePage] Poll status:', response.status, response);
-
-        setDecodeStatus(response.status);
-
-        if (response.status === 'completed') {
-          stopPolling();
-          setResult(response.result);
-          setIsDecoding(false);
-          setDecodeStatus('completed');
-          await refreshTokenBalance();
-          console.log('[DecodePage] Completed with result');
-        } else if (response.status === 'failed') {
-          stopPolling();
-          setDecodeError(response.error || 'Decode failed. Please try again.');
-          setIsDecoding(false);
-          setDecodeStatus('failed');
-          await refreshTokenBalance();
-          console.log('[DecodePage] Failed:', response.error);
-        } else if (response.status === 'canceled') {
-          stopPolling();
-          setDecodeError('Decode was canceled. Your tokens have been refunded.');
-          setIsDecoding(false);
-          setDecodeStatus('canceled');
-          await refreshTokenBalance();
-          console.log('[DecodePage] Canceled');
-        }
-
-        if (attempts >= maxAttempts) {
-          stopPolling();
-          setDecodeError('Decode is taking too long. You can wait or cancel.');
-          setDecodeStatus(null);
-        }
-      } catch (err) {
-        console.error('[DecodePage] Poll error:', err);
-        if (attempts > 5) {
-          stopPolling();
-          setDecodeError('Unable to check decode status. Please try again.');
-          setIsDecoding(false);
-        }
-      }
-    };
-
-    poll();
-    pollIntervalRef.current = setInterval(poll, 1500);
-  };
-
-  const handleCancel = async () => {
-    if (!jobId) return;
-
-    try {
-      console.log('[DecodePage] Canceling job:', jobId);
-      await api.get(`/decode-status?id=${jobId}&cancel=1`);
-      stopPolling();
-      setDecodeError('Decode canceled. Your tokens have been refunded.');
-      setIsDecoding(false);
-      setDecodeStatus('canceled');
-      await refreshTokenBalance();
-    } catch (err) {
-      console.error('[DecodePage] Cancel error:', err);
-    }
-  };
 
   const handleDecode = async () => {
     if (!selectedFile) {
@@ -261,52 +160,38 @@ export function DecodePage() {
       abortControllerRef.current = null;
 
       if (!response.ok) {
-        console.error('[DecodePage] Decode failed', { error: response.error, code: (response as any).code });
+        console.error('[DecodePage] Decode failed', { error: response.error });
 
-        if (response.error?.includes('Authorization failed') || response.error?.includes('auth required')) {
-          const newCount = consecutive401s + 1;
-          setConsecutive401s(newCount);
-
-          if (newCount >= 2) {
-            setDecodeError('Authorization failed for decode. Please sign out and back in.');
-          } else {
-            setDecodeError('Authorization failed. Retrying...');
-          }
-        } else if (response.error?.includes('insufficient') || response.error?.includes('NO_TOKENS')) {
+        if (response.error?.includes('auth required')) {
+          setDecodeError('Authorization failed. Please sign out and back in.');
+        } else if (response.error?.includes('insufficient tokens')) {
           setInsufficientTokens(true);
-          setConsecutive401s(0);
-        } else if (response.error?.includes('timeout') || response.error?.includes('DECODE_TIMEOUT')) {
+        } else if (response.error?.includes('decode timeout')) {
           setDecodeError('The model took too long. Please try again.');
-          setConsecutive401s(0);
+        } else if (response.error?.includes('invalid input')) {
+          setDecodeError('Invalid input. Please check your image and try again.');
         } else {
           setDecodeError(response.error || 'Failed to decode image. Please try again.');
-          setConsecutive401s(0);
         }
 
         setIsDecoding(false);
-        setDecodeStatus('failed');
+        setDecodeStatus('error');
         await refreshTokenBalance();
         return;
       }
 
-      setConsecutive401s(0);
-
-      if (response.jobId) {
-        console.log('[DecodePage] POST /v1/decode result: 202 (async)', response.jobId);
-        setJobId(response.jobId);
-        setDecodeStatus('queued');
-        pollDecodeStatus(response.jobId);
-      } else if (response.result) {
+      if (response.decode?.normalized) {
         console.log('[DecodePage] POST /v1/decode result: 200 (sync)');
-        setResult(response.result);
+        setResult(response.decode.normalized);
+        setSpentTokens(response.decode.spentTokens || 1);
         setIsDecoding(false);
-        setDecodeStatus('completed');
+        setDecodeStatus('done');
         await refreshTokenBalance();
       } else {
         console.error('[DecodePage] Unexpected response format');
         setDecodeError('Unexpected response from server. Please try again.');
         setIsDecoding(false);
-        setDecodeStatus('failed');
+        setDecodeStatus('error');
         await refreshTokenBalance();
       }
     } catch (error: any) {
@@ -397,15 +282,11 @@ export function DecodePage() {
   };
 
   const getStatusLabel = () => {
-    if (!decodeStatus) return '';
     const labels: Record<DecodeStatus, string> = {
-      queued: 'Queuing',
-      running: 'Running model',
-      normalizing: 'Normalizing',
-      saving: 'Saving',
-      completed: 'Done',
-      failed: 'Failed',
-      canceled: 'Canceled',
+      idle: '',
+      decoding: 'Decoding...',
+      done: 'Done',
+      error: 'Error',
     };
     return labels[decodeStatus];
   };
@@ -448,7 +329,7 @@ export function DecodePage() {
               <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
                 <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
-                  {decodeStatus === 'canceled' ? 'Decode Canceled' : 'Decode Error'}
+                  Decode Error
                 </h3>
                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
                   {decodeError}
@@ -565,24 +446,13 @@ export function DecodePage() {
                   <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
                     {getStatusLabel()}
                   </span>
-                  {jobId && decodeStatus !== 'completed' && (
-                    <button
-                      onClick={handleCancel}
-                      className="text-sm text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-semibold"
-                    >
-                      Cancel
-                    </button>
-                  )}
                 </div>
                 <div className="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-2">
                   <div
                     className="bg-gray-900 dark:bg-white h-2 rounded-full transition-all duration-300"
                     style={{
-                      width: decodeStatus === 'queued' ? '25%'
-                        : decodeStatus === 'running' ? '50%'
-                        : decodeStatus === 'normalizing' ? '75%'
-                        : decodeStatus === 'saving' ? '90%'
-                        : decodeStatus === 'completed' ? '100%' : '25%'
+                      width: decodeStatus === 'decoding' ? '50%'
+                        : decodeStatus === 'done' ? '100%' : '25%'
                     }}
                   ></div>
                 </div>
@@ -646,11 +516,11 @@ export function DecodePage() {
                 </div>
                 <div className="relative">
                   <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
-                    {result.prompts[activePromptTab]}
+                    {result[activePromptTab]}
                   </p>
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText(result.prompts[activePromptTab]);
+                      navigator.clipboard.writeText(result[activePromptTab]);
                       setCopiedPrompt(activePromptTab);
                       setTimeout(() => setCopiedPrompt(null), 2000);
                     }}

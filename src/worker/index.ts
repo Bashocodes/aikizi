@@ -99,29 +99,62 @@ async function debugAuth(env: Env, req: Request, reqId: string): Promise<Respons
   const h = req.headers.get('authorization') || req.headers.get('Authorization') || '';
   const hasAuthHeader = !!h;
 
+  let iss = null;
+  if (h) {
+    try {
+      const token = h.replace(/^Bearer\s+/i, '');
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        iss = payload.iss || null;
+      }
+    } catch (e) {
+      // ignore parse errors
+    }
+  }
+
+  const origin = req.headers.get('origin') || '';
+  const allowedOrigins = (env.CORS_ORIGIN || '').split(',').map(o => o.trim());
+  const originAllowed = allowedOrigins.includes(origin);
+
   return json({
+    ok: true,
     hasAuthHeader,
-    userId: authResult.user.id
+    userId: authResult.user.id,
+    iss,
+    originAllowed
   });
 }
 
 async function debugDecode(env: Env, req: Request, reqId: string): Promise<Response> {
-  const { requireUser } = await import('./lib/auth');
+  const { requireUser, requireAdmin } = await import('./lib/auth');
 
+  let authResult;
   try {
-    await requireUser(env, req, reqId);
+    authResult = await requireUser(env, req, reqId);
   } catch (e: any) {
     if (e instanceof Response) {
       return e;
     }
-    return json({ error: 'auth failed' }, 401);
+    return json({ error: 'auth required' }, 401);
   }
 
-  const aiProvider = env.AI_PROVIDER || 'openai';
+  try {
+    await requireAdmin(env, authResult.user.id, reqId);
+  } catch (e: any) {
+    if (e instanceof Response) {
+      return e;
+    }
+    return json({ error: 'admin access required' }, 403);
+  }
+
+  const provider = env.AI_PROVIDER || 'gemini';
+  const build = new Date().toISOString().slice(0, 10);
 
   return json({
     ok: true,
     mode: 'sync',
-    aiProvider
+    provider,
+    build
   });
 }
