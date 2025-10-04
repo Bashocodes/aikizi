@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { api } from '../lib/api';
+import { api, setAuthReady as notifyApiAuthReady } from '../lib/api';
 
 interface UserRecord {
   id: string;
@@ -214,7 +214,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         (async () => {
           // First, ensure account is provisioned
           const accountReady = await ensureAccount();
-          if (!isMounted || !accountReady) return;
+          if (!isMounted || !accountReady) {
+            setAuthReady(true);
+            notifyApiAuthReady();
+            console.log('[Auth] authReady=true (account setup failed)');
+            return;
+          }
 
           // Then fetch user record
           const userData = await fetchUserRecord(session.user.id);
@@ -226,11 +231,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!isMounted) return;
           setTokenBalance(balance.tokens_balance);
           setPlanName(balance.plan_name);
-        })();
-      }
 
-      setAuthReady(true);
-      console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
+          setAuthReady(true);
+          notifyApiAuthReady();
+          console.log('[Auth] authReady=true', `user.id=${session.user.id}`);
+        })();
+      } else {
+        setAuthReady(true);
+        notifyApiAuthReady();
+        console.log('[Auth] authReady=true (no user)');
+      }
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -247,7 +257,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (event === 'SIGNED_IN') {
             console.log('[Auth] SIGNED_IN event detected, ensuring account...');
             const accountReady = await ensureAccount();
-            if (!isMounted || !accountReady) return;
+            if (!isMounted || !accountReady) {
+              if (!authReady) {
+                setAuthReady(true);
+                notifyApiAuthReady();
+                console.log('[Auth] authReady=true (account setup failed in SIGNED_IN)');
+              }
+              return;
+            }
             console.log('[Auth] Account ensured, fetching balance...');
           }
 
@@ -270,6 +287,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (!authReady) {
           setAuthReady(true);
+          notifyApiAuthReady();
           console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
         }
       })();

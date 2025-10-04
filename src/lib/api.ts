@@ -9,35 +9,55 @@ export interface ApiError {
   error: string;
 }
 
-export interface ApiSuccess<T = any> {
+export interface ApiSuccess {
   ok: true;
   [key: string]: any;
 }
 
-export type ApiResponse<T = any> = ApiSuccess<T> | ApiError;
+export type ApiResponse<T = any> = ApiSuccess | ApiError;
+
+let authReadyResolver: (() => void) | null = null;
+let authReadyPromise = new Promise<void>((resolve) => {
+  authReadyResolver = resolve;
+});
+
+export function setAuthReady() {
+  if (authReadyResolver) {
+    authReadyResolver();
+    authReadyResolver = null;
+  }
+}
+
+async function waitForAuth(): Promise<void> {
+  return authReadyPromise;
+}
 
 /**
  * Make an authenticated API call to the Worker
  */
 export async function apiCall<T = any>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  isRetry = false
 ): Promise<ApiResponse<T>> {
   try {
+    await waitForAuth();
+
     const { data: { session } } = await supabase.auth.getSession();
 
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(options.headers as Record<string, string>),
     };
 
-    // Add Authorization header if session exists
     if (session?.access_token) {
       headers['Authorization'] = `Bearer ${session.access_token}`;
+    } else {
+      console.warn('[API] No access token available for request:', endpoint);
     }
 
     const url = `${API_BASE}${endpoint}`;
-    console.log('[API]', options.method || 'GET', url);
+    console.log('[API]', options.method || 'GET', url, { hasToken: !!session?.access_token });
 
     const response = await fetch(url, {
       ...options,
@@ -48,6 +68,21 @@ export async function apiCall<T = any>(
 
     if (!response.ok) {
       console.warn('[API] Error response:', { status: response.status, error: data.error });
+
+      if (response.status === 401 && !isRetry) {
+        console.log('[API] 401 detected, attempting token refresh and retry...');
+
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+
+        if (refreshError || !refreshData.session) {
+          console.error('[API] Token refresh failed:', refreshError);
+          return { ok: false, error: 'Session expired. Please sign in again.' };
+        }
+
+        console.log('[API] Token refreshed successfully, retrying request...');
+        return apiCall<T>(endpoint, options, true);
+      }
+
       return { ok: false, error: data.error || `Request failed with status ${response.status}` };
     }
 
