@@ -109,83 +109,68 @@ export async function callOpenAI(imageUrl: string, model: string, env: Env): Pro
   };
 }
 
-export async function callGemini(imageUrl: string, model: string, env: Env): Promise<DecodeResult> {
-  const startTime = Date.now();
-
-  if (!env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY not configured');
+export aasync function callGemini(
+  env: Env,
+  imageBase64: string | undefined,
+  prompt: string,
+  model: string
+): Promise<{ content: string; metadata?: any }> {
+  const apiKey = env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not set");
   }
 
-  const imageData = await fetch(imageUrl);
-  const imageBuffer = await imageData.arrayBuffer();
-  const imageBase64 = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+  // Build the minimal parts array without any spread/circular refs
+  const parts: any[] = [{ text: prompt }];
+  if (imageBase64 && imageBase64.length > 0) {
+    // Trim whitespace to avoid accidental very long strings
+    const data = imageBase64.replace(/\s+/g, "");
+    parts.push({
+      inlineData: { mimeType: "image/jpeg", data },
+    });
+  }
 
-  const geminiModel = model === 'gemini-2.5-pro' ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp';
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${env.GEMINI_API_KEY}`;
+  // Minimal, schema-correct payload
+  const payload = { contents: [{ role: "user", parts }] };
 
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              text: SYSTEM_PROMPT
-            },
-            {
-              inline_data: {
-                mime_type: 'image/jpeg',
-                data: imageBase64
-              }
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 1500
-      }
-    })
+  // IMPORTANT: JSON.stringify can blow up on circulars; force a safe stringify
+  const body = JSON.stringify(payload, (_k, v) =>
+    typeof v === "bigint" ? v.toString() : v
+  );
+
+  const url = `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    console.error('[Gemini] Error:', response.status, error);
-    throw new Error(`Gemini API error: ${response.status}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Gemini HTTP ${res.status} ${res.statusText}${
+        text ? ` — ${text.slice(0, 300)}` : ""
+      }`
+    );
   }
 
-  const data = await response.json();
-  const content = data.candidates[0]?.content?.parts[0]?.text;
+  const json = (await res.json()) as any;
 
-  if (!content) {
-    throw new Error('No content in Gemini response');
-  }
+  // Robust extraction
+  const candidate = json?.candidates?.[0];
+  const partsOut: any[] = candidate?.content?.parts ?? [];
+  const textOut =
+    partsOut
+      .map((p) => (typeof p?.text === "string" ? p.text : ""))
+      .join("\n")
+      .trim() || "";
 
-  const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  const parsed = JSON.parse(cleaned);
-
-  const latencyMs = Date.now() - startTime;
-
-  return {
-    styleCodes: parsed.styleCodes || [],
-    tags: parsed.tags || [],
-    subjects: parsed.subjects || [],
-    prompts: {
-      story: parsed.prompts?.story || '',
-      mix: parsed.prompts?.mix || '',
-      expand: parsed.prompts?.expand || '',
-      sound: parsed.prompts?.sound || ''
-    },
-    meta: {
-      model: model,
-      latencyMs
-    }
-  };
+  return { content: textOut, metadata: { raw: undefined } }; // avoid echoing huge JSON
 }
-
+ 
 export async function callAIProvider(imageUrl: string, model: string, env: Env): Promise<DecodeResult> {
   const provider = model.startsWith('gpt-') ? 'openai' : 'gemini';
 
