@@ -197,6 +197,12 @@ export function DecodePage() {
       return;
     }
 
+    if (abortControllerRef.current) {
+      console.log('[DecodePage] Aborting previous decode');
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
     setIsDecoding(true);
     setInsufficientTokens(false);
     setDecodeError(null);
@@ -229,7 +235,6 @@ export function DecodePage() {
       const idemKey = `decode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
       abortControllerRef.current = new AbortController();
-      const timeoutId = setTimeout(() => abortControllerRef.current?.abort(), 65000);
 
       const response = await api.post('/decode',
         {
@@ -244,10 +249,10 @@ export function DecodePage() {
         }
       );
 
-      clearTimeout(timeoutId);
+      abortControllerRef.current = null;
 
       if (!response.ok) {
-        console.error('[DecodePage] Decode failed', { error: response.error });
+        console.error('[DecodePage] Decode failed', { error: response.error, code: (response as any).code });
 
         if (response.error?.includes('Authorization failed') || response.error?.includes('auth required')) {
           const newCount = consecutive401s + 1;
@@ -260,6 +265,9 @@ export function DecodePage() {
           }
         } else if (response.error?.includes('insufficient')) {
           setInsufficientTokens(true);
+          setConsecutive401s(0);
+        } else if (response.error?.includes('timeout') || response.error?.includes('took too long')) {
+          setDecodeError('The model took too long. Please try again.');
           setConsecutive401s(0);
         } else {
           setDecodeError(response.error || 'Failed to decode image. Please try again.');
@@ -296,7 +304,7 @@ export function DecodePage() {
       console.error('[DecodePage] Error in decode flow:', error);
 
       if (error.name === 'AbortError') {
-        setDecodeError('Request timed out. Please try again.');
+        console.log('[DecodePage] Decode was aborted by user');
       } else {
         setDecodeError('Failed to decode image. Please try again.');
       }

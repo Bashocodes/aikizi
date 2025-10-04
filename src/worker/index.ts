@@ -34,7 +34,7 @@ export default {
       } else if (pathname === '/v1/ensure-account' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureAccount(env, req));
       } else if (pathname === '/v1/balance' && req.method==='GET') {
-        response = allowOrigin(env, req, await balance(env, req));
+        response = allowOrigin(env, req, await balance(env, req, reqId));
       } else if (pathname === '/v1/spend' && req.method==='POST') {
         response = allowOrigin(env, req, await spend(env, req));
       } else if (pathname === '/v1/images/direct-upload' && req.method==='POST') {
@@ -42,7 +42,7 @@ export default {
       } else if (pathname === '/v1/images/ensure-variants' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureVariants(env, req));
       } else if (pathname === '/v1/decode' && req.method==='POST') {
-        response = allowOrigin(env, req, await decode(env, req));
+        response = allowOrigin(env, req, await decode(env, req, reqId));
       } else if (pathname === '/v1/publish' && req.method==='POST') {
         response = allowOrigin(env, req, await publish(env, req));
       } else if (pathname === '/v1/sref/upload' && req.method==='POST') {
@@ -52,7 +52,7 @@ export default {
       } else if (pathname === '/v1/search' && req.method==='GET') {
         response = allowOrigin(env, req, await search(env, req));
       } else if (pathname === '/v1/debug/auth' && req.method==='GET') {
-        response = allowOrigin(env, req, await debugAuth(env, req));
+        response = allowOrigin(env, req, await debugAuth(env, req, reqId));
       } else {
         response = allowOrigin(env, req, bad('not found', 404));
       }
@@ -72,11 +72,7 @@ export default {
   }
 }
 
-const ADMIN_USER_IDS = [
-  // Add admin user IDs here for /v1/debug/auth access
-];
-
-async function debugAuth(env: Env, req: Request): Promise<Response> {
+async function debugAuth(env: Env, req: Request, reqId: string): Promise<Response> {
   const authHeader = req.headers.get('authorization') || req.headers.get('Authorization') || '';
   const hasAuthHeader = !!authHeader;
   const headerPrefix = authHeader.split(' ')[0] || null;
@@ -104,22 +100,19 @@ async function debugAuth(env: Env, req: Request): Promise<Response> {
       }
       projectMatch = issHost === envHost && issHost !== 'unknown';
 
-      const { requireUser } = await import('./lib/auth');
-      const authResult = await requireUser(env, req);
+      const { requireUser, requireAdmin } = await import('./lib/auth');
+      const authResult = await requireUser(env, req, reqId);
       userId = authResult.user.id;
       authOutcome = 'OK';
+
+      await requireAdmin(env, userId, reqId);
     } catch (e: any) {
       if (e instanceof Response) {
-        const body = await e.json();
-        authOutcome = body.code || 'INVALID';
+        return e;
       } else {
         authOutcome = 'INVALID';
       }
     }
-  }
-
-  if (userId && !ADMIN_USER_IDS.includes(userId) && ADMIN_USER_IDS.length > 0) {
-    return json({ error: 'admin access required' }, 403);
   }
 
   return json({

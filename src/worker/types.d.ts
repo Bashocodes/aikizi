@@ -9,4 +9,5 @@ export interface Env {
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string;
   SREF_ENCRYPTION_KEY: string;
+  ADMIN_USER_IDS?: string;
 }

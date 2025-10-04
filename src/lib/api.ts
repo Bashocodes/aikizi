@@ -49,30 +49,45 @@ export async function apiCall<T = any>(
       return { ok: false, error: 'Not authenticated' };
     }
 
-    // Build headers without Content-Type if body is FormData
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${session.access_token}`,
       ...(options.headers as Record<string, string>),
     };
 
-    // Only set Content-Type if not FormData (browser will set boundary automatically)
     if (!(options.body instanceof FormData)) {
       headers['Content-Type'] = 'application/json';
     }
 
     const url = `${API_BASE}${endpoint}`;
-    console.log('[API]', options.method || 'GET', url, { hasToken: true });
+    const timeout = endpoint === '/decode' ? 45000 : 15000;
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: 'omit', // No cookies needed, using header auth only
-    });
+    console.log('[API]', options.method || 'GET', url, { hasToken: true, timeout });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    let response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+        credentials: 'omit',
+        signal: options.signal || controller.signal,
+      });
+      clearTimeout(timeoutId);
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === 'AbortError') {
+        console.warn('[API] Request timeout:', endpoint);
+        return { ok: false, error: 'Request timed out. Please try again.' };
+      }
+      throw fetchError;
+    }
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.warn('[API] Error response:', { status: response.status, error: data.error });
+      console.warn('[API] Error response:', { status: response.status, error: data.error, code: data.code });
 
       if (response.status === 401 && !isRetry) {
         console.log('[API] 401 detected, attempting token refresh and retry...');
@@ -92,13 +107,20 @@ export async function apiCall<T = any>(
         return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
       }
 
-      return { ok: false, error: data.error || `Request failed with status ${response.status}` };
+      if (response.status === 504) {
+        return { ok: false, error: 'The model took too long. Please try again.' };
+      }
+
+      return { ok: false, error: data.error || `Request failed with status ${response.status}`, code: data.code };
     }
 
     console.log('[API] Success:', data);
     return data;
-  } catch (error) {
+  } catch (error: any) {
     console.error('[API] Unexpected error:', error);
+    if (error.name === 'AbortError') {
+      return { ok: false, error: 'Request was canceled.' };
+    }
     return { ok: false, error: error instanceof Error ? error.message : 'Network error' };
   }
 }

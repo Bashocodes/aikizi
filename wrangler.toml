@@ -7,6 +7,9 @@ account_id = "10caedbcfcc1e6179107cde83789ac60"
 # keep comma-separated, no spaces needed
 CORS_ORIGIN = "https://aikizi.xyz,https://aikizi.com,http://localhost:5173"
 AI_PROVIDER = "gemini" # or "openai"
+# Admin user IDs (Supabase auth.users.id UUIDs) for /v1/debug/auth access
+# Format: comma-separated list, e.g., "uuid1,uuid2,uuid3"
+ADMIN_USER_IDS = ""
 
 # Let Wrangler manage your zone route
 [[routes]]

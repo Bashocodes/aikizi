@@ -45,16 +45,18 @@ export async function ensureAccount(env: Env, req: Request) {
   return json({ ok: true, user_id });
 }
 
-export async function balance(env: Env, req: Request) {
+export async function balance(env: Env, req: Request, reqId?: string) {
+  const logPrefix = reqId ? `[${reqId}] [balance]` : '[balance]';
+
   let user;
   try {
-    const authResult = await requireUser(env, req);
+    const authResult = await requireUser(env, req, reqId);
     user = authResult.user;
   } catch (error) {
     if (error instanceof Response) {
       return cors(error);
     }
-    console.error('[FN balance] Unexpected auth error:', error);
+    console.error(`${logPrefix} Unexpected auth error:`, error);
     return cors(bad('auth required', 401));
   }
 
@@ -62,12 +64,13 @@ export async function balance(env: Env, req: Request) {
   const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', user.id).single();
 
   if (error || !data) {
-    console.log('[FN balance] User not found:', user.id);
+    console.log(`${logPrefix} User not found: ${user.id}`);
     return cors(bad('not found', 404));
   }
 
   const entitlements = data.entitlements as any;
   const balance = Array.isArray(entitlements) ? entitlements[0]?.tokens_balance : entitlements?.tokens_balance;
 
+  console.log(`${logPrefix} Balance retrieved: ${balance || 0}`);
   return cors(json({ ok: true, balance: balance || 0 }));
 }
