@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -8,94 +8,57 @@ export function AuthCallbackPage() {
   const { signInWithGoogle } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const hasProcessed = useRef(false);
 
   useEffect(() => {
+    if (hasProcessed.current) return;
+    hasProcessed.current = true;
+
     const handleCallback = async () => {
       const urlParams = new URLSearchParams(window.location.search);
       const hasCode = urlParams.has('code');
       const hasState = urlParams.has('state');
-      const hash = window.location.hash;
-      const hasAccessToken = hash.includes('access_token');
 
       console.log('[Auth Callback] URL analysis:', {
         href: window.location.href,
         hasCode,
         hasState,
-        hasAccessToken,
       });
 
       try {
-        if (hasCode && hasState) {
-          console.log('[Auth Callback] Step 1: PKCE flow detected, exchanging code for session...');
+        console.log('[Auth Callback] Waiting for Supabase auto-parse (detectSessionInUrl)...');
 
-          const { data, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
+        const maxAttempts = 25;
+        const pollInterval = 200;
+        let attempts = 0;
 
-          if (error) {
-            console.error('[Auth Callback] PKCE exchange failed:', error);
-            setError(error.message);
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+          attempts++;
+
+          const { data: { session } } = await supabase.auth.getSession();
+
+          if (session) {
+            console.log('[Auth Callback] Session detected, user.id:', session.user.id);
+
+            const dest = sessionStorage.getItem('postLogin') || '/explore';
+            sessionStorage.removeItem('postLogin');
+
+            console.log('[Auth Callback] Cleaning URL and navigating to:', dest);
+
+            window.history.replaceState({}, '', dest);
+
+            navigate(dest, { replace: true });
             return;
           }
 
-          console.log('[Auth Callback] PKCE exchange successful, user.id:', data.session?.user?.id);
-          navigate('/explore', { replace: true });
-          return;
+          console.log(`[Auth Callback] Attempt ${attempts}/${maxAttempts}: No session yet...`);
         }
 
-        if (hasAccessToken) {
-          console.log('[Auth Callback] Step 2: Implicit flow detected, parsing hash tokens...');
-
-          const hashParams = new URLSearchParams(hash.substring(1));
-          const accessToken = hashParams.get('access_token');
-          const refreshToken = hashParams.get('refresh_token');
-
-          if (accessToken && refreshToken) {
-            const { data, error } = await supabase.auth.setSession({
-              access_token: accessToken,
-              refresh_token: refreshToken,
-            });
-
-            if (error) {
-              console.error('[Auth Callback] setSession failed:', error);
-              setError(error.message);
-              return;
-            }
-
-            console.log('[Auth Callback] Implicit flow successful, user.id:', data.session?.user?.id);
-            navigate('/explore', { replace: true });
-            return;
-          } else {
-            console.error('[Auth Callback] Hash has access_token indicator but tokens not found');
-          }
-        }
-
-        console.log('[Auth Callback] Step 3: Waiting for detectSessionInUrl auto-parse...');
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (sessionData.session) {
-          console.log('[Auth Callback] detectSessionInUrl successful, user.id:', sessionData.session.user.id);
-          navigate('/explore', { replace: true });
-          return;
-        }
-
-        console.log('[Auth Callback] Step 4: Starting retry mechanism...');
-        const maxRetries = 10;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-          console.log(`[Auth Callback] Retry attempt ${attempt}/${maxRetries}`);
-          await new Promise(resolve => setTimeout(resolve, 200));
-
-          const { data: retrySessionData } = await supabase.auth.getSession();
-          if (retrySessionData.session) {
-            console.log('[Auth Callback] Retry successful, user.id:', retrySessionData.session.user.id);
-            navigate('/explore', { replace: true });
-            return;
-          }
-        }
-
-        console.error('[Auth Callback] All handshake attempts failed');
+        console.error('[Auth Callback] Timeout: Session not detected after', maxAttempts * pollInterval, 'ms');
         setError('Unable to complete sign-in. Please try again.');
       } catch (err) {
-        console.error('[Auth Callback] Unexpected error during handshake:', err);
+        console.error('[Auth Callback] Unexpected error during callback:', err);
         setError(err instanceof Error ? err.message : 'Authentication failed');
       }
     };

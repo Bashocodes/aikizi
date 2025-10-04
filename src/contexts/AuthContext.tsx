@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useRef, ReactNode } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { api, setAuthReady as notifyApiAuthReady } from '../lib/api';
@@ -53,7 +53,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
 
-  const ensureAccount = async (retryCount = 0): Promise<boolean> => {
+  const processingSessionRef = useRef<string | null>(null);
+  const lastEventTimeRef = useRef<number>(0);
+
+  const ensureAccount = async (userId: string, retryCount = 0): Promise<boolean> => {
+    const cacheKey = `ensure:${userId}`;
+
+    if (sessionStorage.getItem(cacheKey) === 'done') {
+      console.log('[Auth] Account already ensured (cached), skipping');
+      return true;
+    }
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
@@ -69,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (retryCount === 0) {
           console.log('[Auth] Retrying ensure_account after 500ms...');
           await new Promise(resolve => setTimeout(resolve, 500));
-          return await ensureAccount(1);
+          return await ensureAccount(userId, 1);
         }
 
         showToast('Account setup couldn\'t complete. Reload and try again.');
@@ -77,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       console.log('[Auth] Account ensured successfully', { userId: response.user_id });
+      sessionStorage.setItem(cacheKey, 'done');
       return true;
     } catch (err) {
       console.warn('[Auth] ensure_account unexpected error:', { err, retryCount });
@@ -84,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (retryCount === 0) {
         console.log('[Auth] Retrying ensure_account after 500ms...');
         await new Promise(resolve => setTimeout(resolve, 500));
-        return await ensureAccount(1);
+        return await ensureAccount(userId, 1);
       }
 
       showToast('Account setup couldn\'t complete. Reload and try again.');
@@ -179,6 +190,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signInWithGoogle = async () => {
+    const currentPath = window.location.pathname + window.location.search;
+    const postLoginPath = currentPath === '/' ? '/explore' : currentPath;
+    sessionStorage.setItem('postLogin', postLoginPath);
+    console.log('[Auth] Saving postLogin destination:', postLoginPath);
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -207,86 +223,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let isMounted = true;
-    let isProcessing = false; // Prevent duplicate processing
 
     console.log('[Auth Boot] Origin:', window.location.origin, 'URL:', window.location.href);
 
-    const processAuthState = async (session: Session | null, event?: string) => {
-      if (!isMounted || isProcessing) return;
-      
-      isProcessing = true;
-      
-      try {
-        console.log('[Auth] Processing auth state:', event || 'INITIAL', session ? `user.id=${session.user.id}` : 'no session');
+    const processAuthState = async (session: Session | null, event: string) => {
+      if (!isMounted) return;
 
-        setSession(session);
-        setUser(session?.user ?? null);
+      const now = Date.now();
+      const sessionId = session?.user?.id || null;
 
-        if (session?.user) {
-          // For SIGNED_IN event, ensure account is provisioned first
-          if (event === 'SIGNED_IN') {
-            console.log('[Auth] SIGNED_IN event detected, ensuring account...');
-            const accountReady = await ensureAccount();
-            if (!isMounted || !accountReady) {
-              isProcessing = false;
-              if (!authReady) {
-                setAuthReady(true);
-                notifyApiAuthReady();
-                console.log('[Auth] authReady=true (account setup failed in SIGNED_IN)');
-              }
-              return;
+      if (sessionId && sessionId === processingSessionRef.current && now - lastEventTimeRef.current < 2000) {
+        console.log('[Auth] Debouncing duplicate event:', event, 'for session:', sessionId);
+        return;
+      }
+
+      if (sessionId) {
+        processingSessionRef.current = sessionId;
+        lastEventTimeRef.current = now;
+      }
+
+      console.log('[Auth] Processing auth state:', event, session ? `user.id=${session.user.id}` : 'no session');
+
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session?.user) {
+        const shouldEnsureAccount =
+          event === 'SIGNED_IN' ||
+          (event === 'INITIAL_SESSION' && !userRecord);
+
+        if (shouldEnsureAccount) {
+          console.log(`[Auth] ${event}: Ensuring account...`);
+          const accountReady = await ensureAccount(session.user.id);
+
+          if (!isMounted || !accountReady) {
+            if (!authReady) {
+              setAuthReady(true);
+              notifyApiAuthReady();
+              console.log('[Auth] authReady=true (account setup failed)');
             }
-            console.log('[Auth] Account ensured, fetching balance...');
-          } else if (event === 'INITIAL_SESSION' && !userRecord) {
-            // For initial session, only ensure account if we don't have user record yet
-            console.log('[Auth] INITIAL_SESSION detected, ensuring account...');
-            const accountReady = await ensureAccount();
-            if (!isMounted || !accountReady) {
-              isProcessing = false;
-              if (!authReady) {
-                setAuthReady(true);
-                notifyApiAuthReady();
-                console.log('[Auth] authReady=true (account setup failed in INITIAL_SESSION)');
-              }
-              return;
-            }
-            console.log('[Auth] Account ensured for initial session...');
+            return;
           }
-
-          // Fetch user record
-          const userData = await fetchUserRecord(session.user.id);
-          if (!isMounted) return;
-          setUserRecord(userData);
-
-          // Fetch balance and update header badge
-          const balance = await fetchTokenBalance();
-          if (!isMounted) return;
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-          console.log('[Auth] Token balance updated in state:', balance.tokens_balance);
-        } else {
-          setUserRecord(null);
-          setTokenBalance(0);
-          setPlanName('free');
+          console.log('[Auth] Account ensured');
         }
 
-        if (!authReady) {
-          setAuthReady(true);
-          notifyApiAuthReady();
-          console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
-        }
-      } finally {
-        isProcessing = false;
+        const userData = await fetchUserRecord(session.user.id);
+        if (!isMounted) return;
+        setUserRecord(userData);
+
+        const balance = await fetchTokenBalance();
+        if (!isMounted) return;
+        setTokenBalance(balance.tokens_balance);
+        setPlanName(balance.plan_name);
+        console.log('[Auth] Token balance updated:', balance.tokens_balance);
+      } else {
+        setUserRecord(null);
+        setTokenBalance(0);
+        setPlanName('free');
+      }
+
+      if (!authReady) {
+        setAuthReady(true);
+        notifyApiAuthReady();
+        console.log('[Auth] authReady=true', session ? `user.id=${session.user.id}` : 'no user');
       }
     };
 
-    // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!isMounted) return;
-      processAuthState(session);
+      processAuthState(session, 'INITIAL_SESSION');
     });
 
-    // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isMounted) return;
       processAuthState(session, event);
