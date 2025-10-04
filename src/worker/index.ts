@@ -39,9 +39,9 @@ export default {
       } else if (cleanPath === '/v1/spend' && req.method==='POST') {
         response = allowOrigin(env, req, await spend(env, req));
       } else if (cleanPath === '/v1/images/direct-upload' && req.method==='POST') {
-        response = allowOrigin(env, req, await directUpload(env, req));
+        response = allowOrigin(env, req, await directUpload(env, req, reqId));
       } else if (cleanPath === '/v1/images/ingest-complete' && req.method==='POST') {
-        response = allowOrigin(env, req, await ingestComplete(env, req));
+        response = allowOrigin(env, req, await ingestComplete(env, req, reqId));
       } else if (cleanPath === '/v1/images/ensure-variants' && req.method==='POST') {
         response = allowOrigin(env, req, await ensureVariants(env, req));
       } else if (cleanPath === '/v1/decode' && req.method==='POST') {

@@ -1,11 +1,13 @@
 import { json, bad } from '../lib/json';
-import { supa } from '../lib/supa';
-import { verifyUser } from '../lib/auth';
+import { requireUser, getAuthedClient } from '../lib/auth';
 import type { Env } from '../types';
 
-export async function directUpload(env: Env, req: Request) {
-  const user = await verifyUser(env, req);
-  if (!user) return bad('Unauthorized', 401);
+export async function directUpload(env: Env, req: Request, reqId?: string) {
+  const logPrefix = reqId ? `[${reqId}] [images]` : '[images]';
+
+  const { user, token } = await requireUser(env, req, reqId);
+
+  console.log(`${logPrefix} directUpload userId=${user.id}`);
 
   const url = `https://api.cloudflare.com/client/v4/accounts/${env.CF_IMAGES_ACCOUNT_ID}/images/v2/direct_upload`;
   const res = await fetch(url, {
@@ -14,7 +16,7 @@ export async function directUpload(env: Env, req: Request) {
   });
 
   if (!res.ok) {
-    console.error('CF Images error:', await res.text());
+    console.error(`${logPrefix} CF Images error:`, await res.text());
     return bad('Cloudflare Images error', 502);
   }
 
@@ -23,12 +25,11 @@ export async function directUpload(env: Env, req: Request) {
   const uploadURL = data?.result?.uploadURL;
 
   if (!cfImageId || !uploadURL) {
+    console.error(`${logPrefix} Invalid CF Images response`);
     return bad('Invalid CF Images response', 502);
   }
 
-  const authHeader = req.headers.get('Authorization');
-  const jwt = authHeader?.replace('Bearer ', '');
-  const client = supa(env, jwt);
+  const client = getAuthedClient(env, token);
 
   const { data: mediaAsset, error } = await client
     .from('media_assets')
@@ -43,9 +44,11 @@ export async function directUpload(env: Env, req: Request) {
     .single();
 
   if (error) {
-    console.error('Media asset creation error:', error);
+    console.error(`${logPrefix} insert failed code=${error.code} msg=${error.message}`);
     return bad('Failed to create media asset record', 500);
   }
+
+  console.log(`${logPrefix} media asset created id=${mediaAsset.id} user=${user.id}`);
 
   return json({
     uploadURL,
@@ -54,14 +57,18 @@ export async function directUpload(env: Env, req: Request) {
   });
 }
 
-export async function ingestComplete(env: Env, req: Request) {
-  const user = await verifyUser(env, req);
-  if (!user) return bad('Unauthorized', 401);
+export async function ingestComplete(env: Env, req: Request, reqId?: string) {
+  const logPrefix = reqId ? `[${reqId}] [images]` : '[images]';
+
+  const { user, token } = await requireUser(env, req, reqId);
+
+  console.log(`${logPrefix} ingestComplete userId=${user.id}`);
 
   const body = await req.json();
   const { mediaAssetId, cfImageId } = body;
 
   if (!mediaAssetId || !cfImageId) {
+    console.error(`${logPrefix} Missing required fields`);
     return bad('Missing mediaAssetId or cfImageId', 400);
   }
 
@@ -71,7 +78,7 @@ export async function ingestComplete(env: Env, req: Request) {
   });
 
   if (!res.ok) {
-    console.error('Failed to fetch CF image metadata:', await res.text());
+    console.error(`${logPrefix} Failed to fetch CF image metadata:`, await res.text());
     return bad('Failed to fetch image metadata', 502);
   }
 
@@ -81,9 +88,7 @@ export async function ingestComplete(env: Env, req: Request) {
   const height = result?.height;
   const bytes = result?.uploaded ? new Date(result.uploaded).getTime() : null;
 
-  const authHeader = req.headers.get('Authorization');
-  const jwt = authHeader?.replace('Bearer ', '');
-  const client = supa(env, jwt);
+  const client = getAuthedClient(env, token);
 
   const { data: mediaAsset, error } = await client
     .from('media_assets')
@@ -98,9 +103,11 @@ export async function ingestComplete(env: Env, req: Request) {
     .single();
 
   if (error) {
-    console.error('Media asset update error:', error);
+    console.error(`${logPrefix} update failed code=${error.code} msg=${error.message}`);
     return bad('Failed to update media asset', 500);
   }
+
+  console.log(`${logPrefix} media asset updated id=${mediaAsset.id} user=${user.id}`);
 
   return json({ mediaAsset });
 }

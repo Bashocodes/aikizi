@@ -110,6 +110,28 @@ export async function requireAdmin(env: Env, userId: string, reqId?: string): Pr
 }
 
 /**
+ * 🔑 Create an authenticated Supabase client with the user's JWT
+ * This ensures RLS policies evaluate against the authenticated user (auth.uid())
+ */
+export function getAuthedClient(env: Env, token: string) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY are required');
+  }
+
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  });
+}
+
+/**
  * 🪪 Compatibility alias for old imports
  * Allows both `requireUser` and `verifyUser` names.
  */
