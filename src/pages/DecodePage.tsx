@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { api } from '../lib/api';
-import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle } from 'lucide-react';
+import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X } from 'lucide-react';
 
 interface DecodeResult {
   style_triplet: string;
@@ -14,19 +14,59 @@ interface DecodeResult {
   sref_hint: string | null;
 }
 
+type DecodeStatus = 'queued' | 'running' | 'normalizing' | 'saving' | 'completed' | 'failed' | 'canceled';
+
+const MODEL_OPTIONS = [
+  { label: 'GPT-5 (default)', value: 'gpt-5' },
+  { label: 'GPT-5 Mini', value: 'gpt-5-mini' },
+  { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
+  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
+];
+
 export function DecodePage() {
   const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash');
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [isDecoding, setIsDecoding] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [result, setResult] = useState<DecodeResult | null>(null);
   const [publishedPostId, setPublishedPostId] = useState<string | null>(null);
   const [insufficientTokens, setInsufficientTokens] = useState(false);
+  const [decodeStatus, setDecodeStatus] = useState<DecodeStatus | null>(null);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
   const navigate = useNavigate();
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem('aikizi:model');
+    if (saved && MODEL_OPTIONS.some(opt => opt.value === saved)) {
+      setSelectedModel(saved);
+    } else {
+      setSelectedModel('gpt-5');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedModel) {
+      sessionStorage.setItem('aikizi:model', selectedModel);
+    }
+  }, [selectedModel]);
+
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -38,6 +78,99 @@ export function DecodePage() {
       setSelectedFile(file);
       setPreviewUrl(URL.createObjectURL(file));
       setResult(null);
+      setDecodeError(null);
+      setDecodeStatus(null);
+      setJobId(null);
+    }
+  };
+
+  const stopPolling = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  };
+
+  const pollDecodeStatus = async (id: string) => {
+    let attempts = 0;
+    const maxAttempts = 120;
+
+    const poll = async () => {
+      attempts++;
+
+      try {
+        const response = await api.get(`/decode-status?id=${id}`);
+
+        if (!response.ok) {
+          console.error('[DecodePage] Poll status error:', response.error);
+          if (attempts > 5) {
+            stopPolling();
+            setDecodeError('Unable to check decode status. Please try again.');
+            setIsDecoding(false);
+            setDecodeStatus(null);
+          }
+          return;
+        }
+
+        console.log('[DecodePage] Poll status:', response.status, response);
+
+        setDecodeStatus(response.status);
+
+        if (response.status === 'completed') {
+          stopPolling();
+          setResult(response.result);
+          setIsDecoding(false);
+          setDecodeStatus('completed');
+          await refreshTokenBalance();
+          console.log('[DecodePage] Completed with result');
+        } else if (response.status === 'failed') {
+          stopPolling();
+          setDecodeError(response.error || 'Decode failed. Please try again.');
+          setIsDecoding(false);
+          setDecodeStatus('failed');
+          await refreshTokenBalance();
+          console.log('[DecodePage] Failed:', response.error);
+        } else if (response.status === 'canceled') {
+          stopPolling();
+          setDecodeError('Decode was canceled. Your tokens have been refunded.');
+          setIsDecoding(false);
+          setDecodeStatus('canceled');
+          await refreshTokenBalance();
+          console.log('[DecodePage] Canceled');
+        }
+
+        if (attempts >= maxAttempts) {
+          stopPolling();
+          setDecodeError('Decode is taking too long. You can wait or cancel.');
+          setDecodeStatus(null);
+        }
+      } catch (err) {
+        console.error('[DecodePage] Poll error:', err);
+        if (attempts > 5) {
+          stopPolling();
+          setDecodeError('Unable to check decode status. Please try again.');
+          setIsDecoding(false);
+        }
+      }
+    };
+
+    poll();
+    pollIntervalRef.current = setInterval(poll, 1500);
+  };
+
+  const handleCancel = async () => {
+    if (!jobId) return;
+
+    try {
+      console.log('[DecodePage] Canceling job:', jobId);
+      await api.get(`/decode-status?id=${jobId}&cancel=1`);
+      stopPolling();
+      setDecodeError('Decode canceled. Your tokens have been refunded.');
+      setIsDecoding(false);
+      setDecodeStatus('canceled');
+      await refreshTokenBalance();
+    } catch (err) {
+      console.error('[DecodePage] Cancel error:', err);
     }
   };
 
@@ -47,24 +180,36 @@ export function DecodePage() {
       return;
     }
 
+    if (!selectedModel) {
+      alert('Please choose a model');
+      return;
+    }
+
     if (tokenBalance < 1) {
       setInsufficientTokens(true);
       return;
     }
 
+    if (isDecoding) {
+      console.log('[DecodePage] Already decoding, ignoring double-click');
+      return;
+    }
+
     setIsDecoding(true);
     setInsufficientTokens(false);
+    setDecodeError(null);
+    setDecodeStatus('queued');
+    setJobId(null);
 
-    console.log('[DecodePage] Starting decode flow', { tokenBalance });
+    console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         alert('Please sign in to decode images');
+        setIsDecoding(false);
         return;
       }
-
-      console.log('[DecodePage] Decoding with token spend');
 
       const reader = new FileReader();
       reader.readAsDataURL(selectedFile);
@@ -74,6 +219,10 @@ export function DecodePage() {
       });
 
       const idemKey = `decode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      abortControllerRef.current = new AbortController();
+      const timeoutId = setTimeout(() => abortControllerRef.current?.abort(), 65000);
+
       const response = await api.post('/decode',
         {
           image_url: imageDataUrl,
@@ -83,30 +232,55 @@ export function DecodePage() {
           headers: {
             'idem-key': idemKey,
           },
+          signal: abortControllerRef.current.signal,
         }
       );
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         console.error('[DecodePage] Decode failed', { error: response.error });
         if (response.error?.includes('insufficient')) {
           setInsufficientTokens(true);
         } else {
-          alert(response.error || 'Failed to decode image. Please try again.');
+          setDecodeError(response.error || 'Failed to decode image. Please try again.');
         }
+        setIsDecoding(false);
+        setDecodeStatus('failed');
         await refreshTokenBalance();
         return;
       }
 
-      setResult(response.normalized);
-
-      console.log('[DecodePage] Decode successful, refreshing token balance');
-      await refreshTokenBalance();
-    } catch (error) {
+      if (response.jobId) {
+        console.log('[DecodePage] POST /v1/decode result: 202 (async)', response.jobId);
+        setJobId(response.jobId);
+        setDecodeStatus('queued');
+        pollDecodeStatus(response.jobId);
+      } else if (response.normalized) {
+        console.log('[DecodePage] POST /v1/decode result: 200 (fast-path)');
+        setResult(response.normalized);
+        setIsDecoding(false);
+        setDecodeStatus('completed');
+        await refreshTokenBalance();
+      } else {
+        console.error('[DecodePage] Unexpected response format');
+        setDecodeError('Unexpected response from server. Please try again.');
+        setIsDecoding(false);
+        setDecodeStatus('failed');
+        await refreshTokenBalance();
+      }
+    } catch (error: any) {
       console.error('[DecodePage] Error in decode flow:', error);
-      alert('Failed to decode image. Please try again.');
-      await refreshTokenBalance();
-    } finally {
+
+      if (error.name === 'AbortError') {
+        setDecodeError('Request timed out. Please try again.');
+      } else {
+        setDecodeError('Failed to decode image. Please try again.');
+      }
+
       setIsDecoding(false);
+      setDecodeStatus('failed');
+      await refreshTokenBalance();
     }
   };
 
@@ -182,6 +356,20 @@ export function DecodePage() {
     }
   };
 
+  const getStatusLabel = () => {
+    if (!decodeStatus) return '';
+    const labels: Record<DecodeStatus, string> = {
+      queued: 'Queuing',
+      running: 'Running model',
+      normalizing: 'Normalizing',
+      saving: 'Saving',
+      completed: 'Done',
+      failed: 'Failed',
+      canceled: 'Canceled',
+    };
+    return labels[decodeStatus];
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -214,6 +402,26 @@ export function DecodePage() {
               </div>
             </div>
           )}
+
+          {decodeError && (
+            <div className="mt-4 backdrop-blur-lg bg-yellow-50/90 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
+                  {decodeStatus === 'canceled' ? 'Decode Canceled' : 'Decode Error'}
+                </h3>
+                <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                  {decodeError}
+                </p>
+              </div>
+              <button
+                onClick={() => setDecodeError(null)}
+                className="text-yellow-600 dark:text-yellow-400 hover:text-yellow-700 dark:hover:text-yellow-300"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
@@ -231,6 +439,10 @@ export function DecodePage() {
                         setSelectedFile(null);
                         setPreviewUrl(null);
                         setResult(null);
+                        setDecodeError(null);
+                        setDecodeStatus(null);
+                        setJobId(null);
+                        stopPolling();
                       }}
                       className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-white rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
@@ -263,23 +475,34 @@ export function DecodePage() {
 
             <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
               <label className="block">
-                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 block">AI Model</span>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="w-full px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white"
-                >
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                  <option value="gpt-5-mini">GPT-5 Mini</option>
-                  <option value="gpt-5">GPT-5</option>
-                </select>
+                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 block">Choose AI Model</span>
+                <div className="space-y-2">
+                  {MODEL_OPTIONS.map((option) => (
+                    <label
+                      key={option.value}
+                      className="flex items-center gap-3 p-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors"
+                    >
+                      <input
+                        type="radio"
+                        name="model"
+                        value={option.value}
+                        checked={selectedModel === option.value}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className="w-4 h-4 text-gray-900 dark:text-white"
+                      />
+                      <span className="text-gray-900 dark:text-white font-medium">{option.label}</span>
+                    </label>
+                  ))}
+                </div>
+                {!selectedModel && (
+                  <p className="mt-2 text-sm text-red-600 dark:text-red-400">Please choose a model</p>
+                )}
               </label>
             </div>
 
             <button
               onClick={handleDecode}
-              disabled={!selectedFile || tokenBalance < 1 || isDecoding}
+              disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
               className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isDecoding ? (
@@ -294,6 +517,36 @@ export function DecodePage() {
                 </>
               )}
             </button>
+
+            {isDecoding && decodeStatus && (
+              <div className="backdrop-blur-lg bg-gray-100/70 dark:bg-gray-800/70 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    {getStatusLabel()}
+                  </span>
+                  {jobId && decodeStatus !== 'completed' && (
+                    <button
+                      onClick={handleCancel}
+                      className="text-sm text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-semibold"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                <div className="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-2">
+                  <div
+                    className="bg-gray-900 dark:bg-white h-2 rounded-full transition-all duration-300"
+                    style={{
+                      width: decodeStatus === 'queued' ? '25%'
+                        : decodeStatus === 'running' ? '50%'
+                        : decodeStatus === 'normalizing' ? '75%'
+                        : decodeStatus === 'saving' ? '90%'
+                        : decodeStatus === 'completed' ? '100%' : '25%'
+                    }}
+                  ></div>
+                </div>
+              </div>
+            )}
           </div>
 
           {result && (
@@ -365,6 +618,9 @@ export function DecodePage() {
                             setPreviewUrl(null);
                             setResult(null);
                             setPublishedPostId(null);
+                            setDecodeError(null);
+                            setDecodeStatus(null);
+                            setJobId(null);
                           }}
                           className="py-3 bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                         >
