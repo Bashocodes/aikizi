@@ -18,12 +18,11 @@ interface JWTPayload {
 }
 
 /**
- * Extract and verify JWT from request headers
- * Identical auth logic for /v1/balance and /v1/decode
+ * 🔐 Extract and verify JWT from request headers
+ * Used by /v1/balance, /v1/decode, /v1/images, etc.
  */
 export async function requireUser(env: Env, req: Request, reqId?: string): Promise<AuthResult> {
   const logPrefix = reqId ? `[${reqId}] [auth]` : '[auth]';
-
   const h = req.headers.get('authorization') || req.headers.get('Authorization') || '';
 
   const m = /^Bearer\s+(.+)$/i.exec(h);
@@ -72,7 +71,7 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
 }
 
 /**
- * Admin guard middleware - checks if user is in allowlist or has admin role
+ * 🛡️ Admin guard middleware - checks if user is in allowlist or has admin role
  */
 export async function requireAdmin(env: Env, userId: string, reqId?: string): Promise<void> {
   const logPrefix = reqId ? `[${reqId}] [admin]` : '[admin]';
@@ -109,3 +108,9 @@ export async function requireAdmin(env: Env, userId: string, reqId?: string): Pr
     headers: { 'Content-Type': 'application/json' }
   });
 }
+
+/**
+ * 🪪 Compatibility alias for old imports
+ * Allows both `requireUser` and `verifyUser` names.
+ */
+export const verifyUser = requireUser;
