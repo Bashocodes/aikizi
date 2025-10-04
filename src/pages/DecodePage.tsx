@@ -114,14 +114,7 @@ export function DecodePage() {
     setIsDecoding(true);
     setInsufficientTokens(false);
     setDecodeError(null);
-    setDecodeStatus('queued');
-    setJobId(null);
-
-    if (consecutive401s >= 2) {
-      setDecodeError('Authorization failed for decode. Please sign out and back in.');
-      setIsDecoding(false);
-      return;
-    }
+    setDecodeStatus('decoding');
 
     console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
 
@@ -140,8 +133,6 @@ export function DecodePage() {
         reader.onerror = reject;
       });
 
-      const idemKey = `decode-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
       abortControllerRef.current = new AbortController();
 
       const response = await api.post('/decode',
@@ -150,9 +141,6 @@ export function DecodePage() {
           model: selectedModel,
         },
         {
-          headers: {
-            'idem-key': idemKey,
-          },
           signal: abortControllerRef.current.signal,
         }
       );
@@ -204,7 +192,7 @@ export function DecodePage() {
       }
 
       setIsDecoding(false);
-      setDecodeStatus('failed');
+      setDecodeStatus('error');
       await refreshTokenBalance();
     }
   };
@@ -235,7 +223,8 @@ export function DecodePage() {
         return;
       }
 
-      const slug = result.style_triplet
+      const title = result.styleCodes[0] || 'Decoded Style';
+      const slug = title
         .toLowerCase()
         .replace(/[•]/g, '')
         .replace(/\s+/g, '-')
@@ -249,16 +238,16 @@ export function DecodePage() {
           'Authorization': `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
-          title: result.style_triplet,
+          title,
           slug,
           image_base64: imageBase64,
-          style_triplet: result.style_triplet,
-          artist_oneword: result.artist_oneword,
-          style_tags: [],
+          style_triplet: result.styleCodes.join(' • '),
+          artist_oneword: result.subjects[0] || '',
+          style_tags: result.styleCodes,
           subjects: result.subjects,
-          tags: result.tokens,
-          prompt_short: result.prompt_short,
-          sref_code: result.sref_hint,
+          tags: result.tags,
+          prompt_short: result.story,
+          sref_code: result.styleCodes[0] || null,
           sref_price: 1,
         }),
       });
@@ -279,16 +268,6 @@ export function DecodePage() {
     } finally {
       setIsPublishing(false);
     }
-  };
-
-  const getStatusLabel = () => {
-    const labels: Record<DecodeStatus, string> = {
-      idle: '',
-      decoding: 'Decoding...',
-      done: 'Done',
-      error: 'Error',
-    };
-    return labels[decodeStatus];
   };
 
   return (
@@ -440,21 +419,13 @@ export function DecodePage() {
               )}
             </button>
 
-            {isDecoding && decodeStatus && (
+            {isDecoding && (
               <div className="backdrop-blur-lg bg-gray-100/70 dark:bg-gray-800/70 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900 dark:border-white"></div>
                   <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                    {getStatusLabel()}
+                    Decoding...
                   </span>
-                </div>
-                <div className="w-full bg-gray-300 dark:bg-gray-700 rounded-full h-2">
-                  <div
-                    className="bg-gray-900 dark:bg-white h-2 rounded-full transition-all duration-300"
-                    style={{
-                      width: decodeStatus === 'decoding' ? '50%'
-                        : decodeStatus === 'done' ? '100%' : '25%'
-                    }}
-                  ></div>
                 </div>
               </div>
             )}
