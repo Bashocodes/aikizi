@@ -65,38 +65,26 @@ export async function ingestComplete(env: Env, req: Request, reqId?: string) {
   console.log(`${logPrefix} ingestComplete userId=${user.id}`);
 
   const body = await req.json();
-  const { mediaAssetId, cfImageId } = body;
+  const { mediaAssetId, cfImageId, width, height, bytes } = body;
 
   if (!mediaAssetId || !cfImageId) {
     console.error(`${logPrefix} Missing required fields`);
     return bad('Missing mediaAssetId or cfImageId', 400);
   }
 
-  const imageUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_IMAGES_ACCOUNT_ID}/images/v1/${cfImageId}`;
-  const res = await fetch(imageUrl, {
-    headers: { 'Authorization': `Bearer ${env.CF_IMAGES_TOKEN}` }
-  });
-
-  if (!res.ok) {
-    console.error(`${logPrefix} Failed to fetch CF image metadata:`, await res.text());
-    return bad('Failed to fetch image metadata', 502);
-  }
-
-  const data = await res.json();
-  const result = data?.result;
-  const width = result?.width;
-  const height = result?.height;
-  const bytes = result?.uploaded ? new Date(result.uploaded).getTime() : null;
+  console.log(`${logPrefix} ingestComplete received w=${width} h=${height} bytes=${bytes}`);
 
   const client = getAuthedClient(env, token);
 
+  const updatePayload: any = {};
+  if (cfImageId) updatePayload.cf_image_id = cfImageId;
+  if (width !== undefined && width !== null) updatePayload.width = width;
+  if (height !== undefined && height !== null) updatePayload.height = height;
+  if (bytes !== undefined && bytes !== null) updatePayload.bytes = bytes;
+
   const { data: mediaAsset, error } = await client
     .from('media_assets')
-    .update({
-      width,
-      height,
-      bytes
-    })
+    .update(updatePayload)
     .eq('id', mediaAssetId)
     .eq('user_id', user.id)
     .select()
@@ -107,9 +95,9 @@ export async function ingestComplete(env: Env, req: Request, reqId?: string) {
     return bad('Failed to update media asset', 500);
   }
 
-  console.log(`${logPrefix} media asset updated id=${mediaAsset.id} user=${user.id}`);
+  console.log(`${logPrefix} ingest-complete updated meta id=${mediaAsset.id} w=${mediaAsset.width} h=${mediaAsset.height} bytes=${mediaAsset.bytes}`);
 
-  return json({ mediaAsset });
+  return json({ ok: true, mediaAssetId: mediaAsset.id });
 }
 
 export async function ensureVariants(env: Env, req: Request) {

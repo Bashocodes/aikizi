@@ -47,7 +47,8 @@ export function DecodePage() {
     }
 
     setSelectedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
     setResult(null);
     setDecodeError(null);
     setMediaAssetId(null);
@@ -62,6 +63,13 @@ export function DecodePage() {
         setIsUploading(false);
         return;
       }
+
+      const img = new Image();
+      const dimensionsPromise = new Promise<{ width: number; height: number }>((resolve, reject) => {
+        img.onload = () => resolve({ width: img.width, height: img.height });
+        img.onerror = reject;
+        img.src = objectUrl;
+      });
 
       const directUploadRes = await api.post('/images/direct-upload', {});
 
@@ -83,9 +91,14 @@ export function DecodePage() {
         throw new Error('Failed to upload image');
       }
 
+      const dimensions = await dimensionsPromise;
+
       await api.post('/images/ingest-complete', {
         mediaAssetId: assetId,
         cfImageId,
+        width: dimensions.width,
+        height: dimensions.height,
+        bytes: file.size,
       });
 
       setMediaAssetId(assetId);
