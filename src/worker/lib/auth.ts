@@ -40,7 +40,7 @@ export async function requireUser(env: Env, req: Request): Promise<AuthResult> {
 
   if (!token) {
     console.log('[FN auth] No token found in any source');
-    throw new Response(JSON.stringify({ error: 'auth required' }), {
+    throw new Response(JSON.stringify({ error: 'auth required', code: 'NO_AUTH_HEADER' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });
@@ -67,7 +67,7 @@ export async function requireUser(env: Env, req: Request): Promise<AuthResult> {
 
   if (error) {
     console.log('[FN auth] Token verification failed:', error.message);
-    throw new Response(JSON.stringify({ error: 'auth required' }), {
+    throw new Response(JSON.stringify({ error: 'auth required', code: 'INVALID_TOKEN' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });
@@ -75,7 +75,7 @@ export async function requireUser(env: Env, req: Request): Promise<AuthResult> {
 
   if (!data.user) {
     console.log('[FN auth] No user found for token');
-    throw new Response(JSON.stringify({ error: 'auth required' }), {
+    throw new Response(JSON.stringify({ error: 'auth required', code: 'INVALID_TOKEN' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });

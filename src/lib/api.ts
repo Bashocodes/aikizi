@@ -1,8 +1,7 @@
 import { supabase } from './supabase';
 
-// API base URL - defaults to same origin /v1 for production on aikizi.xyz
-// Can be overridden with VITE_API_BASE_URL for local dev or testing
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/v1';
+// API base URL - always use https://aikizi.xyz/v1 for production
+const API_BASE = 'https://aikizi.xyz/v1';
 
 export interface ApiError {
   ok: false;
@@ -45,24 +44,29 @@ export async function apiCall<T = any>(
 
     const { data: { session } } = await supabase.auth.getSession();
 
+    if (!session?.access_token) {
+      console.warn('[API] No access token available for request:', endpoint);
+      return { ok: false, error: 'Not authenticated' };
+    }
+
+    // Build headers without Content-Type if body is FormData
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
       ...(options.headers as Record<string, string>),
     };
 
-    if (session?.access_token) {
-      headers['Authorization'] = `Bearer ${session.access_token}`;
-    } else {
-      console.warn('[API] No access token available for request:', endpoint);
+    // Only set Content-Type if not FormData (browser will set boundary automatically)
+    if (!(options.body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
     }
 
     const url = `${API_BASE}${endpoint}`;
-    console.log('[API]', options.method || 'GET', url, { hasToken: !!session?.access_token });
+    console.log('[API]', options.method || 'GET', url, { hasToken: true });
 
     const response = await fetch(url, {
       ...options,
       headers,
-      credentials: 'include',
+      credentials: 'omit', // No cookies needed, using header auth only
     });
 
     const data = await response.json();
@@ -77,12 +81,15 @@ export async function apiCall<T = any>(
 
         if (refreshError || !refreshData.session) {
           console.error('[API] Token refresh failed:', refreshError);
-          return { ok: false, error: 'Session expired. Please sign in again.' };
+          return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
         }
 
         console.log('[API] Token refreshed successfully, retrying request...');
-        console.log('[API]', options.method || 'GET', endpoint, '(retry)');
         return apiCall<T>(endpoint, options, true);
+      }
+
+      if (response.status === 401) {
+        return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
       }
 
       return { ok: false, error: data.error || `Request failed with status ${response.status}` };

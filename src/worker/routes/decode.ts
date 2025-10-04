@@ -36,7 +36,8 @@ export async function decode(env: Env, req: Request) {
 
   if (spend.error) {
     console.log('[FN decode] Spend tokens failed:', spend.error.message);
-    return cors(bad(spend.error.message.includes('insufficient') ? 'insufficient tokens' : 'spend failed'));
+    const errorCode = spend.error.message.includes('insufficient') ? 'NO_TOKENS' : 'SPEND_FAILED';
+    return cors(json({ ok: false, error: spend.error.message.includes('insufficient') ? 'insufficient tokens' : 'spend failed', code: errorCode }, 400));
   }
 
   const body = await req.json() as Body;

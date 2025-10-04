@@ -70,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const processingSessionRef = useRef<string | null>(null);
   const lastEventTimeRef = useRef<number>(0);
+  const lastBalanceFetchRef = useRef<number>(0);
 
   const ensureAccount = async (userId: string, retryCount = 0): Promise<boolean> => {
     const cacheKey = `ensure:${userId}`;
@@ -134,6 +135,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const fetchTokenBalance = async (retryCount = 0): Promise<{ tokens_balance: number; plan_name: string }> => {
+    const now = Date.now();
+    if (now - lastBalanceFetchRef.current < 10000) {
+      console.log('[Auth] Balance fetch debounced (< 10s since last fetch)');
+      return { tokens_balance: tokenBalance, plan_name: planName };
+    }
+    lastBalanceFetchRef.current = now;
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {

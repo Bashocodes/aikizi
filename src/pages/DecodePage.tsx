@@ -36,6 +36,7 @@ export function DecodePage() {
   const [decodeStatus, setDecodeStatus] = useState<DecodeStatus | null>(null);
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [consecutive401s, setConsecutive401s] = useState(0);
   const navigate = useNavigate();
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -81,6 +82,7 @@ export function DecodePage() {
       setDecodeError(null);
       setDecodeStatus(null);
       setJobId(null);
+      setConsecutive401s(0);
     }
   };
 
@@ -201,6 +203,12 @@ export function DecodePage() {
     setDecodeStatus('queued');
     setJobId(null);
 
+    if (consecutive401s >= 2) {
+      setDecodeError('Authorization failed for decode. Please sign out and back in.');
+      setIsDecoding(false);
+      return;
+    }
+
     console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
 
     try {
@@ -240,16 +248,31 @@ export function DecodePage() {
 
       if (!response.ok) {
         console.error('[DecodePage] Decode failed', { error: response.error });
-        if (response.error?.includes('insufficient')) {
+
+        if (response.error?.includes('Authorization failed') || response.error?.includes('auth required')) {
+          const newCount = consecutive401s + 1;
+          setConsecutive401s(newCount);
+
+          if (newCount >= 2) {
+            setDecodeError('Authorization failed for decode. Please sign out and back in.');
+          } else {
+            setDecodeError('Authorization failed. Retrying...');
+          }
+        } else if (response.error?.includes('insufficient')) {
           setInsufficientTokens(true);
+          setConsecutive401s(0);
         } else {
           setDecodeError(response.error || 'Failed to decode image. Please try again.');
+          setConsecutive401s(0);
         }
+
         setIsDecoding(false);
         setDecodeStatus('failed');
         await refreshTokenBalance();
         return;
       }
+
+      setConsecutive401s(0);
 
       if (response.jobId) {
         console.log('[DecodePage] POST /v1/decode result: 202 (async)', response.jobId);
@@ -442,6 +465,7 @@ export function DecodePage() {
                         setDecodeError(null);
                         setDecodeStatus(null);
                         setJobId(null);
+                        setConsecutive401s(0);
                         stopPolling();
                       }}
                       className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-white rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -621,6 +645,7 @@ export function DecodePage() {
                             setDecodeError(null);
                             setDecodeStatus(null);
                             setJobId(null);
+                            setConsecutive401s(0);
                           }}
                           className="py-3 bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                         >
