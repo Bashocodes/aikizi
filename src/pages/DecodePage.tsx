@@ -111,6 +111,7 @@ export function DecodePage() {
         cfImageId: imageId,
         uploadURLHost: new URL(uploadURL).host,
       });
+      console.log('[upload] about to POST to CF', { hasURL: !!uploadURL, host: new URL(uploadURL).host });
       const uploadResult = await uploadToCloudflare(uploadURL, file, setUploadProgress, controller.signal);
       if (!uploadResult.success) throw new Error(uploadResult.error || 'Upload to Cloudflare failed');
       await markIngestComplete(assetId, imageId);
@@ -122,7 +123,7 @@ export function DecodePage() {
       toast.success('Image uploaded and verified successfully');
 
     } catch (error: any) {
-      console.error('[upload] Upload failed:', error);
+      console.error('[upload] failed', { error, stack: error?.stack });
       
       if (error.message === 'Upload cancelled') {
         toast.info('Upload cancelled');
