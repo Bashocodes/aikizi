@@ -8,6 +8,7 @@ import { decode } from './routes/decode';
 import { publish } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
 import { search } from './routes/search';
+import { createPost } from './routes/posts';
 
 function generateReqId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -46,6 +47,8 @@ export default {
         response = allowOrigin(env, req, await ensureVariants(env, req));
       } else if (cleanPath === '/v1/decode' && req.method==='POST') {
         response = allowOrigin(env, req, await decode(env, req, reqId));
+      } else if (cleanPath === '/v1/posts/create' && req.method==='POST') {
+        response = allowOrigin(env, req, await createPost(env, req, reqId));
       } else if (cleanPath === '/v1/publish' && req.method==='POST') {
         response = allowOrigin(env, req, await publish(env, req));
       } else if (cleanPath === '/v1/sref/upload' && req.method==='POST') {
