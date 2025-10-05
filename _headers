@@ -1,40 +1,11 @@
 /*
-  # --- Security & Stability ---
+  # Single, consolidated CSP. Do NOT add another CSP anywhere else.
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://aikizi.xyz https://upload.imagedelivery.net https://api.cloudflare.com https://*.supabase.co wss://*.supabase.co https://*.supabase.in wss://*.supabase.in; img-src 'self' data: blob: https://imagedelivery.net https://*.imagedelivery.net https://upload.imagedelivery.net https://aikizi.xyz https://*.supabase.co https://*.supabase.in; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.jsdelivr.net; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'self'; base-uri 'self'; object-src 'none';
 
-  # Allow the app to call your Worker API, Supabase, and Cloudflare Images direct-upload
-  Content-Security-Policy: default-src 'self';
-  Content-Security-Policy: connect-src 'self'
-    https://aikizi.xyz
-    https://upload.imagedelivery.net
-    https://api.cloudflare.com
-    https://*.supabase.co
-    wss://*.supabase.co
-    https://*.supabase.in
-    wss://*.supabase.in
-    https://*.jsdelivr.net
-    https://*.cloudflare.com
-    https://*.googleapis.com;
-  # Permit images from Cloudflare Images, plus data/blob for previews
-  Content-Security-Policy: img-src 'self' data: blob:
-    https://imagedelivery.net
-    https://*.imagedelivery.net
-    https://upload.imagedelivery.net
-    https://aikizi.xyz
-    https://*.supabase.co
-    https://*.supabase.in;
-  # Scripts and styles (typical React/Vite; adjust if you add other CDNs)
-  Content-Security-Policy: script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.jsdelivr.net;
-  Content-Security-Policy: style-src  'self' 'unsafe-inline';
-  Content-Security-Policy: font-src   'self' data:;
-  Content-Security-Policy: frame-ancestors 'self';
-  Content-Security-Policy: base-uri 'self';
-  Content-Security-Policy: object-src 'none';
-
-  # Common security headers
+  # Complementary hardening headers (keep these)
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 
-  # Optional caching (safe defaults for a SPA; tweak to your needs)
+  # SPA-friendly caching (optional)
   Cache-Control: public, max-age=0, must-revalidate
-
