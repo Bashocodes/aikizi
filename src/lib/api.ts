@@ -215,30 +215,50 @@ export async function requestDirectUpload(): Promise<{ uploadURL: string; mediaA
   console.log('[upload] requestDirectUpload start');
   const t0 = performance.now();
 
-  const response = await api.post<{ uploadURL: string; mediaAssetId: string; cfImageId: string }>(
-    '/images/direct-upload',
-    {}
-  );
+  await waitForAuth();
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error('Not authenticated');
+  }
+
+  const response = await fetch(`${API_BASE}/images/direct-upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    credentials: 'omit',
+  });
 
   const t1 = performance.now();
 
   if (!response.ok) {
-    console.error('[upload] requestDirectUpload failed', { error: response.error });
-    throw new Error(response.error || 'Failed to request upload URL');
+    let errorMessage = 'Failed to request upload URL';
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody?.error || errorMessage;
+    } catch (err) {
+      console.error('[upload] requestDirectUpload failed to parse error JSON', err);
+    }
+    console.error('[upload] requestDirectUpload failed', { status: response.status, error: errorMessage });
+    throw new Error(errorMessage);
   }
+
+  const data = await response.json();
+  const { uploadURL, mediaAssetId, cfImageId } = data ?? {};
 
   console.log('[upload] requestDirectUpload end', {
     dur_ms: Math.round(t1 - t0),
-    hasUploadURL: !!response.uploadURL,
-    hasMediaAssetId: !!response.mediaAssetId,
-    hasCfImageId: !!response.cfImageId
+    hasUploadURL: !!uploadURL,
+    hasMediaAssetId: !!mediaAssetId,
+    hasCfImageId: !!cfImageId,
   });
 
-  return {
-    uploadURL: response.uploadURL,
-    mediaAssetId: response.mediaAssetId,
-    cfImageId: response.cfImageId
-  };
+  if (uploadURL && mediaAssetId && cfImageId) {
+    return { uploadURL, mediaAssetId, cfImageId };
+  }
+
+  throw new Error('Invalid upload URL response');
 }
 
 /**
@@ -268,8 +288,12 @@ export async function uploadToCloudflare(
       if (xhr.status === 200) {
         try {
           const j = JSON.parse(xhr.responseText || '{}');
-          if (j?.success === false) return resolve({ success: false, error: j?.errors?.[0]?.message || 'Cloudflare upload failed' });
-        } catch { /* body may be empty; 200 is enough */ }
+          if (j?.success === false) {
+            return resolve({ success: false, error: j?.errors?.[0]?.message || 'Cloudflare upload failed' });
+          }
+        } catch {
+          /* body may be empty; 200 is enough */
+        }
         return resolve({ success: true });
       }
       resolve({ success: false, error: `Upload failed: ${xhr.status} ${xhr.statusText}` });
@@ -281,10 +305,9 @@ export async function uploadToCloudflare(
 
     // Build form-data
     const form = new FormData();
-    form.append('file', file, (file as any).name || 'upload');
+    form.append('file', file);
 
-    xhr.open('POST', uploadURL);            // ← IMPORTANT: POST, not PUT
-    // Do NOT set Content-Type; XHR sets the multipart boundary.
+    xhr.open('POST', uploadURL);
     xhr.send(form);
   });
 }
@@ -305,4 +328,21 @@ export async function completeUpload(
   if (!res.ok && !res.success) return { success: false, error: res.error || 'Ingest complete failed' };
 
   return { success: true };
+}
+
+export async function markIngestComplete(
+  mediaAssetId: string,
+  cfImageId: string
+): Promise<any> {
+  const response = await api.post<{ success: boolean; message?: string }>(
+    '/images/ingest-complete',
+    { mediaAssetId, cfImageId }
+  );
+
+  if ('ok' in response && response.ok === false) {
+    throw new Error(response.error || 'Failed to verify upload');
+  }
+
+  console.log('[upload] CF upload verified successful', { mediaAssetId, cfImageId });
+  return response;
 }

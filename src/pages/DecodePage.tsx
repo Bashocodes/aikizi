@@ -104,52 +104,23 @@ export function DecodePage() {
       }
 
       console.log('[upload] Step 1: Requesting direct upload URL...');
-      
-      // Step 1: Get upload URL from our Worker
-      const { uploadURL, mediaAssetId: assetId, cfImageId: imageId } = await requestDirectUpload();
-      
-      if (!uploadURL || !assetId || !imageId) {
-        throw new Error('Failed to get upload URL');
-      }
 
-      console.log('[upload] Step 2: Got upload URL, starting upload to Cloudflare...');
+      const { uploadURL, mediaAssetId: assetId, cfImageId: imageId } = await requestDirectUpload();
       logUploadDebug('direct-upload.received', {
         mediaAssetId: assetId,
         cfImageId: imageId,
-        uploadURLHost: new URL(uploadURL).host
+        uploadURLHost: new URL(uploadURL).host,
       });
+      const uploadResult = await uploadToCloudflare(uploadURL, file, setUploadProgress, controller.signal);
+      if (!uploadResult.success) throw new Error(uploadResult.error || 'Upload to Cloudflare failed');
+      await markIngestComplete(assetId, imageId);
 
-      // Step 2: Upload to Cloudflare
-      const uploadResult = await uploadToCloudflare(
-        uploadURL, 
-        file, 
-        setUploadProgress, 
-        controller.signal
-      );
-
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || 'Upload to Cloudflare failed');
-      }
-
-      console.log('[upload] Step 3: Upload successful, verifying with backend...');
       setUploadProgress(100);
-
-      // Step 3: Verify upload and get metadata from Cloudflare
-      const verifyResponse = await markIngestComplete(assetId, imageId);
-      
-      // Check if the response indicates the image was found in Cloudflare
-      if (verifyResponse.error?.includes('not found in Cloudflare')) {
-        throw new Error('Upload verification failed - image not saved properly');
-      }
-
-      console.log('[upload] Step 4: Upload verified and metadata saved');
-      
-      // Success!
       setMediaAssetId(assetId);
       setCfImageId(imageId);
       setUploadSuccess(true);
       toast.success('Image uploaded and verified successfully');
-      
+
     } catch (error: any) {
       console.error('[upload] Upload failed:', error);
       
