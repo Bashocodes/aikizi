@@ -248,57 +248,40 @@ export async function requestDirectUpload(): Promise<{ uploadURL: string; mediaA
  */
 export async function uploadToCloudflare(
   uploadURL: string,
-  file: File,
+  file: Blob,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal
 ): Promise<{ success: boolean; error?: string }> {
-  try {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+
+    if (signal) signal.addEventListener('abort', () => xhr.abort(), { once: true });
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        try {
+          const j = JSON.parse(xhr.responseText || '{}');
+          if (j?.success === false) return resolve({ success: false, error: j?.errors?.[0]?.message || 'Cloudflare upload failed' });
+        } catch {/* ignore */}
+        return resolve({ success: true });
+      }
+      resolve({ success: false, error: `Upload failed: ${xhr.status} ${xhr.statusText}` });
+    };
+
+    xhr.onerror = () => resolve({ success: false, error: 'Network error during upload' });
+    xhr.onabort = () => resolve({ success: false, error: 'Upload cancelled' });
+    xhr.ontimeout = () => resolve({ success: false, error: 'Upload timeout' });
+    xhr.timeout = 60_000;
+
     const form = new FormData();
-    form.append('file', file, file.name);
-
-    if (onProgress) {
-      // Fetch does not support progress natively; emit a small initial tick.
-      onProgress(5);
-    }
-
-    const response = await fetch(uploadURL, {
-      method: 'POST',
-      body: form,
-      mode: 'cors',
-      credentials: 'omit',
-      signal
-    });
-
-    if (onProgress) {
-      onProgress(95);
-    }
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      return { success: false, error: `CF upload failed ${response.status}: ${text}` };
-    }
-
-    let isSuccess = true;
-
-    try {
-      const data = await response.clone().json();
-      isSuccess = Boolean(data?.result?.id || data?.success === true || response.ok);
-    } catch (err) {
-      isSuccess = response.ok;
-    }
-
-    if (onProgress) {
-      onProgress(100);
-    }
-
-    return isSuccess ? { success: true } : { success: false, error: 'Unknown upload failure' };
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      return { success: false, error: 'Upload cancelled' };
-    }
-
-    return { success: false, error: error?.message || 'Network error' };
-  }
+    form.append('file', file, (file as any).name || 'upload');
+    xhr.open('POST', uploadURL);
+    xhr.send(form);
+  });
 }
 
 /**
