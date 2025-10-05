@@ -17,6 +17,7 @@ interface Post {
   title: string;
   slug: string;
   created_at: string;
+  image_base64?: string | null;
   media_assets: {
     variants: any;
   };
@@ -58,6 +59,7 @@ export function PublisherProfilePage() {
           title,
           slug,
           created_at,
+          image_base64,
           media_assets (variants)
         `)
         .eq('owner_id', profileData.user_id)
@@ -149,13 +151,19 @@ export function PublisherProfilePage() {
                 className="group cursor-pointer"
               >
                 <div className="aspect-square bg-gray-200 dark:bg-gray-800 rounded-lg overflow-hidden mb-3 relative">
-                  {post.media_assets?.variants && (
+                  {post.image_base64 ? (
+                    <img
+                      src={`data:image/jpeg;base64,${post.image_base64}`}
+                      alt={post.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : post.media_assets?.variants ? (
                     <img
                       src={(post.media_assets.variants as any).grid || (post.media_assets.variants as any).thumb}
                       alt={post.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
-                  )}
+                  ) : null}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
                 <h3 className="font-semibold text-gray-900 dark:text-white line-clamp-1">{post.title}</h3>

@@ -51,7 +51,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     }
 
     console.log(`${logPrefix} created post id=${post.id}`);
-    return json({ success: true, postId: post.id });
+    return json({ ok: true, postId: post.id });
   } catch (err) {
     if (err instanceof Response) {
       return err;

@@ -31,7 +31,6 @@ src/worker/
 └── routes/
     ├── account.ts        # /v1/ensure-account, /v1/balance
     ├── wallet.ts         # /v1/spend
-    ├── images.ts         # /v1/images/*
     ├── decode.ts         # /v1/decode
     ├── publish.ts        # /v1/publish
     ├── sref.ts           # /v1/sref/*
@@ -50,14 +49,11 @@ src/worker/
 ### Wallet
 - `POST /v1/spend` - Spend tokens (requires `idem-key` header)
 
-### Images
-- `POST /v1/images/direct-upload` - Get Cloudflare Images upload URL
-- `POST /v1/images/ensure-variants` - Placeholder for variant management
-
 ### Decoding
-- `POST /v1/decode` - Decode image and spend 1 token (requires `idem-key` header)
+- `POST /v1/decode/:model` - Decode image and spend 1 token
 
 ### Publishing
+- `POST /v1/posts/create` - Create a post from a decoded image
 - `POST /v1/publish` - Publish a post (requires publisher/admin role)
 
 ### SREF Codes
@@ -77,8 +73,6 @@ Use Wrangler CLI or Cloudflare Dashboard:
 # Set secrets via CLI
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_SERVICE_KEY
-wrangler secret put CF_IMAGES_ACCOUNT_ID
-wrangler secret put CF_IMAGES_TOKEN
 wrangler secret put CORS_ORIGIN
 wrangler secret put AI_PROVIDER
 wrangler secret put GEMINI_API_KEY
@@ -89,8 +83,6 @@ wrangler secret put SREF_ENCRYPTION_KEY
 **Required Values:**
 - `SUPABASE_URL` - Your Supabase project URL (https://xxx.supabase.co)
 - `SUPABASE_SERVICE_KEY` - Supabase service role key (secret!)
-- `CF_IMAGES_ACCOUNT_ID` - Cloudflare account ID
-- `CF_IMAGES_TOKEN` - Cloudflare Images API token
 - `CORS_ORIGIN` - `https://aikizi.com,https://www.aikizi.com`
 - `AI_PROVIDER` - `gemini` or `openai`
 - `GEMINI_API_KEY` - Google Gemini API key
@@ -140,7 +132,8 @@ curl -H "Authorization: Bearer YOUR_JWT" https://aikizi.com/v1/balance
 
 All frontend API calls now use `/v1/*`:
 - ✅ AuthContext: `/v1/ensure-account`, `/v1/balance`
-- ✅ DecodePage: `/v1/decode` (with `idem-key` header)
+- ✅ DecodePage: `/v1/decode/<model>`
+- ✅ DecodePage post action: `/v1/posts/create`
 - ✅ PostDetailPage: `/v1/sref/unlock`
 
 ## Database Changes
@@ -160,7 +153,6 @@ CORS is handled by the Worker:
 ## Idempotency
 
 Endpoints that modify data require an `idem-key` header:
-- `/v1/decode` - Prevents double-spending on retry
 - `/v1/spend` - General token spending
 - `/v1/sref/unlock` - Uses `sref:<post_id>` format
 
@@ -215,7 +207,7 @@ This starts Wrangler dev server at `http://localhost:8787/v1/*`
 ✅ Health endpoint returns `{ ok: true }`
 ✅ Sign-in flow creates account with 1000 tokens
 ✅ POST /v1/spend with idem-key is idempotent
-✅ POST /v1/images/direct-upload returns CF Images URL
+✅ POST /v1/posts/create stores base64 image payload
 ✅ POST /v1/decode pre-spends 1 token
 ✅ POST /v1/publish creates posts with metadata
 ✅ SREF upload/unlock works with token spending
