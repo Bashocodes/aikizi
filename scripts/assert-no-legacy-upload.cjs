@@ -30,6 +30,22 @@ const buildDir = fs.existsSync(path.join(ROOT, 'dist')) ? 'dist'
               : fs.existsSync(path.join(ROOT, 'build')) ? 'build'
               : null;
 
-scan(ROOT);
-if (buildDir) scan(path.join(ROOT, buildDir));
+const publishDir = process.env.NETLIFY_PUBLISH_DIR
+  ? path.isAbsolute(process.env.NETLIFY_PUBLISH_DIR)
+    ? process.env.NETLIFY_PUBLISH_DIR
+    : path.join(ROOT, process.env.NETLIFY_PUBLISH_DIR)
+  : null;
+
+const uniqueDirs = new Set([ROOT]);
+if (buildDir) {
+  uniqueDirs.add(path.join(ROOT, buildDir));
+}
+if (publishDir) {
+  uniqueDirs.add(publishDir);
+}
+
+for (const dir of uniqueDirs) {
+  scan(dir);
+}
+
 console.log('✅ No legacy upload tokens found.');
