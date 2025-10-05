@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 
+export const __dbg = (...args: any[]) => console.log('[AIKIZI]', ...args);
+
 // API base URL - always use https://aikizi.xyz/v1 for production
 const API_BASE = 'https://aikizi.xyz/v1';
 
@@ -208,57 +210,29 @@ export async function uploadWithDebug(req: RequestInfo | URL, init?: RequestInit
   }
 }
 
-/**
- * Request a direct upload URL from Cloudflare Images
- */
-export async function requestDirectUpload(): Promise<{ uploadURL: string; mediaAssetId: string; cfImageId: string }> {
-  console.log('[upload] requestDirectUpload start');
-  const t0 = performance.now();
+export type DirectUploadResponse = {
+  uploadURL: string;
+  mediaAssetId: string;
+  cfImageId: string;
+};
 
-  await waitForAuth();
-  const { data: { session } } = await supabase.auth.getSession();
+export async function requestDirectUpload(): Promise<DirectUploadResponse> {
+  const res = await fetch('/v1/images/direct-upload', { method: 'POST', credentials: 'include' });
+  __dbg('direct-upload.status', res.status, res.statusText);
 
-  if (!session?.access_token) {
-    throw new Error('Not authenticated');
-  }
-
-  const response = await fetch(`${API_BASE}/images/direct-upload`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    credentials: 'omit',
+  const j = await res.json().catch((e) => {
+    __dbg('direct-upload.json.error', String(e));
+    return null;
   });
+  __dbg('direct-upload.payload', j);
 
-  const t1 = performance.now();
-
-  if (!response.ok) {
-    let errorMessage = 'Failed to request upload URL';
-    try {
-      const errorBody = await response.json();
-      errorMessage = errorBody?.error || errorMessage;
-    } catch (err) {
-      console.error('[upload] requestDirectUpload failed to parse error JSON', err);
-    }
-    console.error('[upload] requestDirectUpload failed', { status: response.status, error: errorMessage });
-    throw new Error(errorMessage);
+  const { uploadURL, mediaAssetId, cfImageId } = j || {};
+  if (!uploadURL || !mediaAssetId || !cfImageId) {
+    throw new Error('Invalid upload URL response');
   }
-
-  const data = await response.json();
-  const { uploadURL, mediaAssetId, cfImageId } = data ?? {};
-
-  console.log('[upload] requestDirectUpload end', {
-    dur_ms: Math.round(t1 - t0),
-    hasUploadURL: !!uploadURL,
-    hasMediaAssetId: !!mediaAssetId,
-    hasCfImageId: !!cfImageId,
-  });
-
-  if (uploadURL && mediaAssetId && cfImageId) {
-    return { uploadURL, mediaAssetId, cfImageId };
-  }
-
-  throw new Error('Invalid upload URL response');
+  // Expose for quick manual curl testing
+  (window as any).__aikizi = { uploadURL, mediaAssetId, cfImageId };
+  return { uploadURL, mediaAssetId, cfImageId };
 }
 
 /**
@@ -269,47 +243,58 @@ export async function uploadToCloudflare(
   file: Blob,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal
-): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
+): Promise<{ success: boolean; error?: string; via?: 'xhr' | 'fetch' }> {
+  __dbg('upload.begin', { host: new URL(uploadURL).host, type: file.type, size: file.size });
 
-    // Progress
+  // 1) Primary path: XHR + FormData
+  const viaXhr = await new Promise<{ success: boolean; error?: string }>((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.timeout = 60000;
+
+    xhr.onloadstart = () => __dbg('xhr.onloadstart');
+    xhr.onreadystatechange = () => __dbg('xhr.onreadystatechange', { rs: xhr.readyState, st: xhr.status });
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onerror = () => { __dbg('xhr.onerror'); resolve({ success: false, error: 'Network error during upload (xhr)' }); };
+    xhr.onabort = () => { __dbg('xhr.onabort'); resolve({ success: false, error: 'Upload cancelled (xhr)' }); };
+    xhr.ontimeout = () => { __dbg('xhr.ontimeout'); resolve({ success: false, error: 'Upload timeout (xhr)' }); };
+    xhr.onload = () => {
+      __dbg('xhr.onload', { status: xhr.status, len: xhr.responseText?.length ?? 0 });
+      if (xhr.status === 200) return resolve({ success: true });
+      resolve({ success: false, error: `Upload failed (xhr): ${xhr.status} ${xhr.statusText}` });
     };
 
-    // Abort
     if (signal) signal.addEventListener('abort', () => xhr.abort(), { once: true });
 
-    // Handlers
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        try {
-          const j = JSON.parse(xhr.responseText || '{}');
-          if (j?.success === false) {
-            return resolve({ success: false, error: j?.errors?.[0]?.message || 'Cloudflare upload failed' });
-          }
-        } catch {
-          /* body may be empty; 200 is enough */
-        }
-        return resolve({ success: true });
-      }
-      resolve({ success: false, error: `Upload failed: ${xhr.status} ${xhr.statusText}` });
-    };
-    xhr.onerror = () => resolve({ success: false, error: 'Network error during upload' });
-    xhr.onabort = () => resolve({ success: false, error: 'Upload cancelled' });
-    xhr.ontimeout = () => resolve({ success: false, error: 'Upload timeout' });
-    xhr.timeout = 60_000;
-
-    // Build form-data
     const form = new FormData();
-    form.append('file', file);
+    form.append('file', file, (file as any).name || 'upload');
 
-    xhr.open('POST', uploadURL);
-    xhr.send(form);
+    try {
+      xhr.open('POST', uploadURL);
+      xhr.send(form);
+    } catch (e: any) {
+      __dbg('xhr.open/send.exception', String(e));
+      resolve({ success: false, error: 'XHR open/send threw before request' });
+    }
   });
+
+  if (viaXhr.success) return { success: true, via: 'xhr' };
+  __dbg('upload.xhr.failed', viaXhr.error);
+
+  // 2) Fallback: fetch + FormData (no progress, just to force visibility in Network)
+  try {
+    const form = new FormData();
+    form.append('file', file, (file as any).name || 'upload');
+
+    const res = await fetch(uploadURL, { method: 'POST', body: form, redirect: 'follow' as RequestRedirect });
+    __dbg('fetch.result', { ok: res.ok, status: res.status, statusText: res.statusText });
+    if (!res.ok) return { success: false, error: `Upload failed (fetch): ${res.status} ${res.statusText}`, via: 'fetch' };
+    return { success: true, via: 'fetch' };
+  } catch (e: any) {
+    __dbg('fetch.exception', String(e));
+    return { success: false, error: 'Network error during upload (fetch)', via: 'fetch' };
+  }
 }
 
 export async function completeUpload(
