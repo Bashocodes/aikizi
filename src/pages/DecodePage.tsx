@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabase';
-import { api, logUploadDebug, uploadWithDebug, requestDirectUpload, uploadToCloudflare, markIngestComplete } from '../lib/api';
+import { api } from '../lib/api';
 import { toast } from '../lib/toast';
 import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
 
@@ -27,43 +26,40 @@ export function DecodePage() {
   const { tokenBalance, refreshTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [mediaAssetId, setMediaAssetId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('gpt-5');
-  const [isUploading, setIsUploading] = useState(false);
   const [isDecoding, setIsDecoding] = useState(false);
+  const [isPosting, setIsPosting] = useState(false);
   const [result, setResult] = useState<DecodeResult | null>(null);
   const [insufficientTokens, setInsufficientTokens] = useState(false);
   const [decodeError, setDecodeError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
-  const [lastUploadDebug, setLastUploadDebug] = useState<any>(null);
-  const [lastUploadInit, setLastUploadInit] = useState<RequestInit | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
-  const [cfImageId, setCfImageId] = useState<string | null>(null);
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
 
   useEffect(() => {
-    const handleToast = (e: any) => {
-      setToastMessage(e.detail);
+    const handleToast = (event: Event) => {
+      const customEvent = event as CustomEvent<{ type: string; message: string }>;
+      if (!customEvent.detail) return;
+      setToastMessage(customEvent.detail);
       setTimeout(() => setToastMessage(null), 4000);
     };
     window.addEventListener('toast', handleToast);
     return () => window.removeEventListener('toast', handleToast);
   }, []);
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Cancel any in-progress upload
-    if (abortController) {
-      abortController.abort();
-      setAbortController(null);
-    }
-
-    // File validation
     const MAX_FILE_SIZE = 25 * 1024 * 1024;
     const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
@@ -77,116 +73,21 @@ export function DecodePage() {
       return;
     }
 
-    // Reset state
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
+
     setSelectedFile(file);
     const objectUrl = URL.createObjectURL(file);
     setPreviewUrl(objectUrl);
     setResult(null);
     setDecodeError(null);
-    setMediaAssetId(null);
-    setCfImageId(null);
-    setUploadSuccess(false);
-    setUploadProgress(0);
-
-    // Start upload
-    setIsUploading(true);
-    const controller = new AbortController();
-    setAbortController(controller);
-
-    try {
-      // Check auth
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        toast.error('Please sign in to upload images');
-        setIsUploading(false);
-        setAbortController(null);
-        return;
-      }
-
-      console.log('[upload] Step 1: Requesting direct upload URL...');
-
-      const { uploadURL, mediaAssetId: assetId, cfImageId: imageId } = await requestDirectUpload();
-      logUploadDebug('direct-upload.received', {
-        mediaAssetId: assetId,
-        cfImageId: imageId,
-        uploadURLHost: new URL(uploadURL).host,
-      });
-      console.log('[upload] about to POST to CF', { hasURL: !!uploadURL, host: new URL(uploadURL).host });
-      const uploadResult = await uploadToCloudflare(uploadURL, file, setUploadProgress, controller.signal);
-      if (!uploadResult.success) throw new Error(uploadResult.error || 'Upload to Cloudflare failed');
-      await markIngestComplete(assetId, imageId);
-
-      setUploadProgress(100);
-      setMediaAssetId(assetId);
-      setCfImageId(imageId);
-      setUploadSuccess(true);
-      toast.success('Image uploaded and verified successfully');
-
-    } catch (error: any) {
-      console.error('[upload] failed', { error, stack: error?.stack });
-      
-      if (error.message === 'Upload cancelled') {
-        toast.info('Upload cancelled');
-      } else if (error.message?.includes('verification failed')) {
-        toast.error('Upload appeared to succeed but image not found. Please try again.');
-      } else if (error.message?.includes('expired')) {
-        toast.error('Upload link expired. Please try again.');
-      } else if (error.message?.includes('Network')) {
-        toast.error('Network error. Please check your connection.');
-      } else {
-        toast.error(error.message || 'Failed to upload image. Please try again.');
-      }
-      
-      // Reset state on error
-      setSelectedFile(null);
-      setPreviewUrl(null);
-      setMediaAssetId(null);
-      setCfImageId(null);
-      
-    } finally {
-      setIsUploading(false);
-      setAbortController(null);
-      setUploadProgress(0);
-    }
+    setImageBase64(null);
+    setInsufficientTokens(false);
   };
-
-  const handleCancelUpload = () => {
-    if (abortController) {
-      abortController.abort();
-      setAbortController(null);
-    }
-  };
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      (window as any).__aikizi = {
-        retryLastUpload: async () => {
-          if (!lastUploadDebug || !lastUploadInit) {
-            logUploadDebug('manual.retry.nodata');
-            console.warn('[UploadDebug] No upload data available for retry');
-            return;
-          }
-
-          logUploadDebug('manual.retry.begin', {
-            uploadURL: lastUploadDebug.uploadURL,
-            mediaAssetId: lastUploadDebug.mediaAssetId
-          });
-
-          try {
-            const res = await uploadWithDebug(lastUploadDebug.uploadURL, lastUploadInit);
-            logUploadDebug('manual.retry.result', { status: res.status, ok: res.ok });
-            alert(`Retry complete: ${res.ok ? 'Success' : 'Failed'} (${res.status})`);
-          } catch (e: any) {
-            logUploadDebug('manual.retry.error', { message: e?.message });
-            alert(`Retry error: ${e?.message}`);
-          }
-        }
-      };
-    }
-  }, [lastUploadDebug, lastUploadInit]);
 
   const handleDecode = async () => {
-    if (!selectedFile || !mediaAssetId) {
+    if (!selectedFile) {
       alert('Please upload an image first');
       return;
     }
@@ -205,6 +106,8 @@ export function DecodePage() {
     setInsufficientTokens(false);
     setDecodeError(null);
 
+    console.log('[decode] starting decode', { model: selectedModel });
+
     try {
       const reader = new FileReader();
       reader.readAsDataURL(selectedFile);
@@ -214,65 +117,162 @@ export function DecodePage() {
       });
 
       const [mimePrefix, base64Data] = imageDataUrl.split(',');
+      if (!base64Data) {
+        throw new Error('Unable to read image data');
+      }
+
       const mimeType = mimePrefix.match(/:(.*?);/)?.[1] || 'image/jpeg';
+      setImageBase64(base64Data);
 
       const response = await api.post('/decode', {
         base64: base64Data,
-        mimeType: mimeType,
+        mimeType,
         model: selectedModel,
-        input_media_id: mediaAssetId,
       });
 
-      if (!response.success) {
-        if (response.error?.includes('insufficient tokens')) {
-          setInsufficientTokens(true);
-        } else {
-          setDecodeError(response.error || 'Failed to decode image');
+      if (response && typeof response === 'object') {
+        if ('ok' in response && response.ok === false) {
+          if (response.error?.includes('insufficient tokens')) {
+            setInsufficientTokens(true);
+          } else {
+            setDecodeError(response.error || 'Failed to decode image');
+          }
+          return;
         }
-        setIsDecoding(false);
-        await refreshTokenBalance();
-        return;
+
+        if ('success' in response && response.success === false) {
+          const message = response.error || 'Failed to decode image';
+          if (message?.includes('insufficient tokens')) {
+            setInsufficientTokens(true);
+          } else {
+            setDecodeError(message);
+          }
+          return;
+        }
       }
 
-      if (response.result?.content) {
-        try {
-          const cleaned = response.result.content
-            .replace(/```json\n?/g, '')
-            .replace(/```\n?/g, '')
-            .trim();
-          const parsed = JSON.parse(cleaned);
+        const extractContent = (payload: unknown): unknown => {
+          if (!payload || typeof payload !== 'object') return payload;
+          const record = payload as Record<string, unknown>;
+          const resultEntry = record.result;
 
-          const normalized = {
-            styleCodes: parsed.styleCodes || [],
-            tags: parsed.tags || [],
-            subjects: parsed.subjects || [],
-            story: parsed.prompts?.story || '',
-            mix: parsed.prompts?.mix || '',
-            expand: parsed.prompts?.expand || '',
-            sound: parsed.prompts?.sound || '',
-          };
+          if (resultEntry && typeof resultEntry === 'object') {
+            const resultRecord = resultEntry as Record<string, unknown>;
+            if (typeof resultRecord.content === 'string') {
+              return resultRecord.content;
+            }
+          }
 
-          setResult(normalized);
-        } catch (parseError) {
-          setResult({
-            styleCodes: [],
-            tags: [],
-            subjects: [],
-            story: response.result.content,
+          if (typeof resultEntry === 'string') {
+            return resultEntry;
+          }
+
+          if (record.analysis !== undefined) {
+            return record.analysis;
+          }
+
+          if (record.content !== undefined) {
+            return record.content;
+          }
+
+          return record;
+        };
+
+        const normalizeResult = (data: unknown): DecodeResult => {
+          if (!data) {
+            return {
+              styleCodes: [],
+              tags: [],
+              subjects: [],
+            story: '',
             mix: '',
             expand: '',
             sound: '',
-          });
+          };
         }
 
-        setIsDecoding(false);
-        await refreshTokenBalance();
-      }
+          if (typeof data === 'string') {
+            try {
+              const cleaned = data
+                .replace(/```json\n?/g, '')
+                .replace(/```\n?/g, '')
+                .trim();
+              const parsed = JSON.parse(cleaned);
+              return normalizeResult(parsed);
+            } catch {
+              return {
+                styleCodes: [],
+                tags: [],
+                subjects: [],
+                story: data,
+                mix: '',
+                expand: '',
+                sound: '',
+              };
+            }
+          }
+
+          const record = data as Record<string, unknown>;
+          const prompts = (record.prompts as Record<string, unknown> | undefined) || undefined;
+
+          return {
+            styleCodes: (record.styleCodes as string[] | undefined) || (record.style_codes as string[] | undefined) || [],
+            tags: (record.tags as string[] | undefined) || [],
+            subjects: (record.subjects as string[] | undefined) || [],
+            story: (record.story as string | undefined) || (prompts?.story as string | undefined) || '',
+            mix: (record.mix as string | undefined) || (prompts?.mix as string | undefined) || '',
+            expand: (record.expand as string | undefined) || (prompts?.expand as string | undefined) || '',
+            sound: (record.sound as string | undefined) || (prompts?.sound as string | undefined) || '',
+          };
+        };
+
+      const rawContent = extractContent(response);
+      const normalized = normalizeResult(rawContent);
+      setResult(normalized);
+      console.log('[decode] analysis success', { hasResult: true });
+      console.log('[decode] ready to post');
     } catch (error) {
       console.error('Decode error:', error);
       setDecodeError('Failed to decode image. Please try again.');
+    } finally {
       setIsDecoding(false);
       await refreshTokenBalance();
+    }
+  };
+
+  const handlePost = async () => {
+    if (!result || !imageBase64) {
+      toast.error('Decode an image before posting');
+      return;
+    }
+
+    setIsPosting(true);
+
+    try {
+      const response = await api.post('/posts/create', {
+        analysis: result,
+        imageBase64,
+        model: selectedModel,
+      });
+
+      if (response && typeof response === 'object') {
+        if ('ok' in response && response.ok === false) {
+          toast.error(response.error || 'Failed to create post');
+          return;
+        }
+
+        if ('success' in response && response.success === false) {
+          toast.error(response.error || 'Failed to create post');
+          return;
+        }
+      }
+
+      toast.success('Posted successfully');
+    } catch (error) {
+      console.error('Post error:', error);
+      toast.error('Failed to create post');
+    } finally {
+      setIsPosting(false);
     }
   };
 
@@ -332,15 +332,6 @@ export function DecodePage() {
               </button>
             </div>
           )}
-
-          {uploadSuccess && !result && (
-            <div className="mt-4 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700 rounded-lg p-4 flex items-center gap-3">
-              <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
-              <p className="text-sm text-green-800 dark:text-green-200">
-                Image uploaded successfully! Ready to decode.
-              </p>
-            </div>
-          )}
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
@@ -355,26 +346,6 @@ export function DecodePage() {
                 {previewUrl ? (
                   <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
                     <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
-                    {isUploading && (
-                      <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-4">
-                        <div className="text-white text-center w-full max-w-xs">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-3"></div>
-                          <p className="text-sm mb-3">Uploading... {uploadProgress}%</p>
-                          <div className="w-full bg-gray-700 rounded-full h-2 mb-3">
-                            <div
-                              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                              style={{ width: `${uploadProgress}%` }}
-                            ></div>
-                          </div>
-                          <button
-                            onClick={handleCancelUpload}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors"
-                          >
-                            Cancel Upload
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <label className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center cursor-pointer hover:border-gray-400 transition-colors block">
@@ -422,27 +393,83 @@ export function DecodePage() {
               </label>
             </div>
 
-            <button
-              onClick={handleDecode}
-              disabled={!mediaAssetId || !selectedModel || tokenBalance < 1 || isDecoding || isUploading}
-              className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isDecoding ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
-                  Decoding...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-5 h-5" />
-                  Decode (1 token)
-                </>
-              )}
-            </button>
+            {result ? (
+              <button
+                onClick={handlePost}
+                disabled={isPosting || !imageBase64}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isPosting ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                    Posting...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-5 h-5" />
+                    Post
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                onClick={handleDecode}
+                disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
+                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isDecoding ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
+                    Decoding...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Decode (1 token)
+                  </>
+                )}
+              </button>
+            )}
           </div>
 
           {result && (
             <div className="space-y-6">
+              {previewUrl && (
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
+                    Analysis Summary
+                  </h3>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
+                      <img src={previewUrl} alt="Analyzed preview" className="w-full h-full object-cover" />
+                    </div>
+                    <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
+                      <div>
+                        <span className="font-semibold">Model:</span>{' '}
+                        {MODEL_OPTIONS.find((option) => option.value === selectedModel)?.label || selectedModel}
+                      </div>
+                      <div>
+                        <span className="font-semibold">Style codes:</span> {result.styleCodes.length}
+                      </div>
+                      <div>
+                        <span className="font-semibold">Tags:</span> {result.tags.length}
+                      </div>
+                      <div>
+                        <span className="font-semibold">Subjects:</span> {result.subjects.length}
+                      </div>
+                      {result.story && (
+                        <div>
+                          <span className="font-semibold">Story snippet:</span>
+                          <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400">
+                            {result.story.length > 200 ? `${result.story.slice(0, 200)}…` : result.story}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div className="flex items-center gap-2 mb-4">
                   <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
@@ -569,28 +596,6 @@ export function DecodePage() {
             >
               <X className="w-5 h-5" />
             </button>
-          </div>
-        </div>
-      )}
-
-      {typeof window !== 'undefined' && localStorage.getItem('aikizi_debug') === '1' && lastUploadDebug && (
-        <div className="fixed bottom-4 right-4 bg-gray-900 text-white p-4 rounded-lg shadow-2xl max-w-sm border border-gray-700">
-          <div className="text-xs font-bold mb-2 text-yellow-400">Upload Debug Panel</div>
-          <div className="text-xs space-y-1 mb-3 font-mono">
-            <div>File: {lastUploadDebug.fileName}</div>
-            <div>Size: {Math.round(lastUploadDebug.size / 1024)} KB</div>
-            <div>Type: {lastUploadDebug.type}</div>
-            <div>Started: {new Date(lastUploadDebug.startedAt).toLocaleTimeString()}</div>
-            <div>Asset ID: {lastUploadDebug.mediaAssetId?.slice(0, 8)}...</div>
-          </div>
-          <button
-            onClick={() => (window as any).__aikizi?.retryLastUpload()}
-            className="w-full bg-yellow-600 hover:bg-yellow-700 text-white text-xs py-2 px-3 rounded transition-colors"
-          >
-            Retry Last Upload
-          </button>
-          <div className="text-xs text-gray-400 mt-2">
-            Console: [UploadDebug] logs
           </div>
         </div>
       )}
