@@ -251,96 +251,97 @@ export async function uploadToCloudflare(
   file: Blob,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; response?: Response; error?: string }> {
+  console.log('[upload] Starting CF upload', {
+    uploadURL,
+    fileSize: file.size,
+    fileType: file.type,
+  });
+
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
-
-    if (signal) signal.addEventListener('abort', () => xhr.abort(), { once: true });
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        try {
-          const j = JSON.parse(xhr.responseText || '{}');
-          if (j?.success === false) return resolve({ success: false, error: j?.errors?.[0]?.message || 'Cloudflare upload failed' });
-        } catch {/* ignore */}
-        return resolve({ success: true });
-      }
-      resolve({ success: false, error: `Upload failed: ${xhr.status} ${xhr.statusText}` });
-    };
-
-    xhr.onerror = () => resolve({ success: false, error: 'Network error during upload' });
-    xhr.onabort = () => resolve({ success: false, error: 'Upload cancelled' });
-    xhr.ontimeout = () => resolve({ success: false, error: 'Upload timeout' });
-    xhr.timeout = 60_000;
-
     const form = new FormData();
     form.append('file', file, (file as any).name || 'upload');
+
+    // Handle aborts
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        xhr.abort();
+        resolve({ success: false, error: 'Upload cancelled' });
+      });
+    }
+
+    // Progress tracking
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        onProgress(pct);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      console.log('[upload] XHR load complete', xhr.status, xhr.responseText);
+      if (xhr.status === 200) {
+        try {
+          const json = JSON.parse(xhr.responseText || '{}');
+          if (json.success === false) {
+            resolve({ success: false, error: json.errors?.[0]?.message || 'Cloudflare upload failed' });
+          } else {
+            resolve({ success: true, response: new Response(xhr.responseText, { status: 200 }) });
+          }
+        } catch {
+          resolve({ success: true, response: new Response(xhr.responseText, { status: 200 }) });
+        }
+      } else {
+        resolve({ success: false, error: `HTTP ${xhr.status}: ${xhr.statusText}` });
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      resolve({ success: false, error: 'Network error during upload' });
+    });
+
+    xhr.addEventListener('abort', () => {
+      resolve({ success: false, error: 'Upload cancelled' });
+    });
+
     xhr.open('POST', uploadURL);
+    xhr.timeout = 60000;
     xhr.send(form);
   });
 }
 
 /**
- * Complete upload flow with verification
+ * Complete upload: verify metadata and update status in backend.
  */
 export async function completeUpload(
   uploadURL: string,
-  file: File,
+  file: Blob,
   mediaAssetId: string,
   cfImageId: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal
 ): Promise<{ success: boolean; error?: string }> {
-  console.log('[upload] Starting complete upload flow');
-  
-  // Step 1: Upload to Cloudflare
+  console.log('[upload] Starting completeUpload flow');
+
   const uploadResult = await uploadToCloudflare(uploadURL, file, onProgress, signal);
-  
   if (!uploadResult.success) {
     console.error('[upload] CF upload failed:', uploadResult.error);
-    
-    // Mark as failed in our DB
-    try {
-      await api.post('/images/upload-failed', {
-        mediaAssetId,
-        cfImageId,
-        error: uploadResult.error
-      });
-    } catch (e) {
-      console.error('[upload] Failed to mark upload as failed in DB');
-    }
-    
-    return {
-      success: false,
-      error: uploadResult.error || 'Upload to Cloudflare failed'
-    };
+    return { success: false, error: uploadResult.error };
   }
-  
-  console.log('[upload] CF upload successful, marking as complete...');
-  
-  // Step 2: Mark as complete and fetch metadata
+
+  console.log('[upload] Upload done, verifying with backend...');
   try {
-    const completeResponse = await api.post('/images/ingest-complete', {
+    const verify = await api.post('/images/ingest-complete', {
       mediaAssetId,
-      cfImageId
+      cfImageId,
     });
-    
-    if (!completeResponse.ok) {
-      throw new Error(completeResponse.error || 'Failed to complete upload');
-    }
-    
-    console.log('[upload] Upload completed successfully with metadata:', completeResponse.metadata);
+
+    if (!verify.ok && !verify.success) throw new Error(verify.error || 'Failed to complete ingest');
+    console.log('[upload] Ingest complete verified:', verify);
     return { success: true };
-    
-  } catch (error: any) {
-    console.error('[upload] Failed to mark upload complete:', error);
-    return {
-      success: false,
-      error: 'Upload succeeded but metadata update failed'
-    };
+  } catch (err: any) {
+    console.error('[upload] Metadata verification failed:', err.message);
+    return { success: false, error: err.message };
   }
 }
