@@ -165,7 +165,8 @@ export interface Database {
           owner_id: string
           title: string
           slug: string
-          image_id: string
+          image_id: string | null
+          image_base64: string | null
           visibility: string
           status: string
           created_at: string
@@ -175,7 +176,8 @@ export interface Database {
           owner_id: string
           title: string
           slug: string
-          image_id: string
+          image_id?: string | null
+          image_base64?: string | null
           visibility?: string
           status?: string
           created_at?: string
@@ -185,7 +187,8 @@ export interface Database {
           owner_id?: string
           title?: string
           slug?: string
-          image_id?: string
+          image_id?: string | null
+          image_base64?: string | null
           visibility?: string
           status?: string
           created_at?: string

@@ -19,7 +19,7 @@ interface JWTPayload {
 
 /**
  * 🔐 Extract and verify JWT from request headers
- * Used by /v1/balance, /v1/decode, /v1/images, etc.
+ * Used by /v1/balance, /v1/decode, /v1/posts, etc.
  */
 export async function requireUser(env: Env, req: Request, reqId?: string): Promise<AuthResult> {
   const logPrefix = reqId ? `[${reqId}] [auth]` : '[auth]';

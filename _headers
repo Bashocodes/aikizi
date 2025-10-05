@@ -1,6 +1,6 @@
 /*
   # Single, consolidated CSP. Do NOT add another CSP anywhere else.
-  Content-Security-Policy: default-src 'self'; connect-src 'self' https://aikizi.xyz https://upload.imagedelivery.net https://api.cloudflare.com https://*.supabase.co wss://*.supabase.co https://*.supabase.in wss://*.supabase.in; img-src 'self' data: blob: https://imagedelivery.net https://*.imagedelivery.net https://upload.imagedelivery.net https://aikizi.xyz https://*.supabase.co https://*.supabase.in; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.jsdelivr.net; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'self'; base-uri 'self'; object-src 'none';
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://aikizi.xyz https://api.cloudflare.com https://*.supabase.co wss://*.supabase.co https://*.supabase.in wss://*.supabase.in; img-src 'self' data: blob: https://aikizi.xyz https://*.supabase.co https://*.supabase.in; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.jsdelivr.net; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'self'; base-uri 'self'; object-src 'none';
 
   # Complementary hardening headers (keep these)
   X-Content-Type-Options: nosniff

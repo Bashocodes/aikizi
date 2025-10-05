@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { createPost, decodeImage } from '../lib/api';
@@ -55,7 +55,6 @@ export function DecodePage() {
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
-  const lastDecodeKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleToast = (event: Event) => {
@@ -104,19 +103,9 @@ export function DecodePage() {
     setDecodeError(null);
     setImageBase64(null);
     setInsufficientTokens(false);
-    lastDecodeKeyRef.current = null;
-
-    readFileAsBase64(file)
-      .then((base64Data) => {
-        setImageBase64(base64Data);
-      })
-      .catch(() => {
-        toast.error('Failed to read image. Please try another file.');
-        setImageBase64(null);
-      });
   };
 
-  const handleDecode = useCallback(async () => {
+  const handleDecode = async () => {
     if (!selectedFile) {
       alert('Please upload an image first');
       return;
@@ -124,11 +113,6 @@ export function DecodePage() {
 
     if (!selectedModel) {
       alert('Please choose a model');
-      return;
-    }
-
-    if (!imageBase64) {
-      toast.error('Image is still loading. Please try again in a moment.');
       return;
     }
 
@@ -147,33 +131,20 @@ export function DecodePage() {
     setDecodeError(null);
     setResult(null);
 
-    console.log('[decode] starting decode', { model: selectedModel });
-
     try {
-      const response = await decodeImage(selectedModel, imageBase64, user.id);
+      const base64 = await readFileAsBase64(selectedFile);
+      setImageBase64(base64);
+
+      console.log('[decode] start', {
+        model: selectedModel,
+        size: selectedFile.size,
+        type: selectedFile.type,
+      });
+
+      const response = await decodeImage(selectedModel, base64, user.id);
 
       if (!response || typeof response !== 'object') {
         throw new Error('Unexpected response from server');
-      }
-
-      if ('ok' in response && response.ok === false) {
-        const errorMessage = response.error || 'Failed to decode image';
-        if (errorMessage.includes('insufficient tokens')) {
-          setInsufficientTokens(true);
-        } else {
-          setDecodeError(errorMessage);
-        }
-        return;
-      }
-
-      if ('success' in response && response.success === false) {
-        const errorMessage = response.error || 'Failed to decode image';
-        if (errorMessage.includes('insufficient tokens')) {
-          setInsufficientTokens(true);
-        } else {
-          setDecodeError(errorMessage);
-        }
-        return;
       }
 
       const analysis = 'analysis' in response ? response.analysis : null;
@@ -201,16 +172,20 @@ export function DecodePage() {
       };
 
       setResult(normalized);
-      console.log('[decode] analysis success', { hasResult: true });
-      console.log('[decode] ready to post');
+      console.log('[decode] done', { ok: true });
     } catch (error) {
       console.error('Decode error:', error);
-      setDecodeError('Failed to decode image. Please try again.');
+      const message = error instanceof Error ? error.message : 'Failed to decode image. Please try again.';
+      if (message.toLowerCase().includes('insufficient tokens')) {
+        setInsufficientTokens(true);
+      } else {
+        setDecodeError('Failed to decode image. Please try again.');
+      }
     } finally {
       setIsDecoding(false);
       await refreshTokenBalance();
     }
-  }, [imageBase64, refreshTokenBalance, selectedFile, selectedModel, tokenBalance, user?.id]);
+  };
 
   const handlePost = async () => {
     if (!result || !imageBase64) {
@@ -221,23 +196,10 @@ export function DecodePage() {
     setIsPosting(true);
 
     try {
-      const response = await createPost(selectedModel, imageBase64, result);
-
-      if (!response || typeof response !== 'object') {
-        throw new Error('Unexpected response from server');
-      }
-
-      if ('ok' in response && response.ok === false) {
-        toast.error(response.error || 'Failed to publish post.');
-        return;
-      }
-
-      if ('success' in response && response.success === false) {
-        toast.error(response.error || 'Failed to publish post.');
-        return;
-      }
-
+      console.log('[post] create', { model: selectedModel });
+      const response = await createPost({ model: selectedModel, image_base64: imageBase64, analysis: result });
       toast.success('Post created successfully');
+      console.log('[post] ok', { postId: response.postId });
     } catch (error) {
       console.error('Post error:', error);
       toast.error('Failed to publish post.');
@@ -245,34 +207,6 @@ export function DecodePage() {
       setIsPosting(false);
     }
   };
-
-  useEffect(() => {
-    if (!imageBase64 || !selectedFile) {
-      return;
-    }
-
-    if (!user?.id) {
-      return;
-    }
-
-    if (tokenBalance < 1) {
-      setInsufficientTokens(true);
-      return;
-    }
-
-    if (isDecoding) {
-      return;
-    }
-
-    const decodeKey = `${selectedModel}:${imageBase64}`;
-
-    if (lastDecodeKeyRef.current === decodeKey) {
-      return;
-    }
-
-    lastDecodeKeyRef.current = decodeKey;
-    void handleDecode();
-  }, [handleDecode, imageBase64, isDecoding, selectedFile, selectedModel, tokenBalance, user?.id]);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
@@ -326,9 +260,6 @@ export function DecodePage() {
                 <button
                   onClick={() => {
                     setDecodeError(null);
-                    if (imageBase64) {
-                      lastDecodeKeyRef.current = `${selectedModel}:${imageBase64}`;
-                    }
                     void handleDecode();
                   }}
                   className="inline-flex items-center gap-2 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm font-semibold transition-colors"
@@ -402,7 +333,6 @@ export function DecodePage() {
                         checked={selectedModel === option.value}
                         onChange={(e) => {
                           setSelectedModel(e.target.value);
-                          lastDecodeKeyRef.current = null;
                         }}
                         className="w-4 h-4"
                       />
@@ -435,8 +365,9 @@ export function DecodePage() {
               </button>
             ) : (
               <button
-                disabled
-                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors opacity-70 cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={() => void handleDecode()}
+                disabled={!selectedFile || isDecoding}
+                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isDecoding ? (
                   <>
@@ -446,7 +377,7 @@ export function DecodePage() {
                 ) : selectedFile ? (
                   <>
                     <Sparkles className="w-5 h-5" />
-                    Preparing analysis…
+                    Decode
                   </>
                 ) : (
                   <>

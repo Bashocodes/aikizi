@@ -540,9 +540,9 @@ export function MePage() {
             ) : (
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {decodes.map((decode) => {
-                  const imageUrl = decode.media_asset?.cf_image_id
-                    ? `https://imagedelivery.net/${import.meta.env.VITE_CF_IMAGES_ACCOUNT_HASH}/${decode.media_asset.cf_image_id}/public`
-                    : null;
+                  const variants = decode.media_asset?.variants as any;
+                  const base64 = typeof variants?.original === 'string' ? variants.original : null;
+                  const imageUrl = base64 ? `data:image/jpeg;base64,${base64}` : null;
 
                   return (
                     <div

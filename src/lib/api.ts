@@ -158,8 +158,22 @@ export const api = {
     apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
 };
 
-export const decodeImage = <T = unknown>(model: string, image_base64: string, user_id: string) =>
-  api.post<T>(`/v1/decode/${model}`, { image_base64, user_id, model });
+export type DecodeResponse = { success: boolean; analysis: any };
+export async function decodeImage(model: string, image_base64: string, user_id?: string): Promise<DecodeResponse> {
+  const res = await api.post(`/v1/decode/${encodeURIComponent(model)}`, { image_base64, user_id });
+  if (!res || (typeof res === 'object' && 'ok' in res && res.ok === false)) {
+    const error = typeof res === 'object' && res && 'error' in res ? (res as ApiError).error : null;
+    throw new Error(error || 'Decode failed');
+  }
+  return res as DecodeResponse;
+}
 
-export const createPost = <T = unknown>(model: string, image_base64: string, analysis: unknown) =>
-  api.post<T>('/v1/posts/create', { model, image_base64, analysis });
+export type CreatePostResponse = { ok: true; postId: string };
+export async function createPost(payload: { model: string; image_base64: string; analysis: any }): Promise<CreatePostResponse> {
+  const res = await api.post('/v1/posts/create', payload);
+  if (!res || (typeof res === 'object' && 'ok' in res && res.ok === false)) {
+    const error = typeof res === 'object' && res && 'error' in res ? (res as ApiError).error : null;
+    throw new Error(error || 'Post failed');
+  }
+  return res as CreatePostResponse;
+}

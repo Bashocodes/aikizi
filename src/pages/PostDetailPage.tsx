@@ -10,6 +10,7 @@ interface PostDetail {
   title: string;
   slug: string;
   created_at: string;
+  image_base64?: string | null;
   media_assets: {
     variants: any;
   };
@@ -66,6 +67,7 @@ export function PostDetailPage() {
           title,
           slug,
           created_at,
+          image_base64,
           media_assets (variants),
           post_meta (prompt_short, prompt_full, mj_version, model_used),
           post_styles (style_triplet, artist_oneword, style_tags),
@@ -201,13 +203,19 @@ export function PostDetailPage() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid lg:grid-cols-2 gap-8">
           <div className="aspect-square bg-gray-200 dark:bg-gray-800 rounded-2xl overflow-hidden">
-            {post.media_assets?.variants && (
+            {post.image_base64 ? (
+              <img
+                src={`data:image/jpeg;base64,${post.image_base64}`}
+                alt={post.title}
+                className="w-full h-full object-cover"
+              />
+            ) : post.media_assets?.variants ? (
               <img
                 src={(post.media_assets.variants as any).full || (post.media_assets.variants as any).grid}
                 alt={post.title}
                 className="w-full h-full object-cover"
               />
-            )}
+            ) : null}
           </div>
 
           <div className="space-y-6">
