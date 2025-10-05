@@ -57,11 +57,13 @@ export function DecodePage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Cancel any in-progress upload
     if (abortController) {
       abortController.abort();
       setAbortController(null);
     }
 
+    // File validation
     const MAX_FILE_SIZE = 25 * 1024 * 1024;
     const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
@@ -75,6 +77,7 @@ export function DecodePage() {
       return;
     }
 
+    // Reset state
     setSelectedFile(file);
     const objectUrl = URL.createObjectURL(file);
     setPreviewUrl(objectUrl);
@@ -85,12 +88,13 @@ export function DecodePage() {
     setUploadSuccess(false);
     setUploadProgress(0);
 
+    // Start upload
     setIsUploading(true);
-
     const controller = new AbortController();
     setAbortController(controller);
 
     try {
+      // Check auth
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         toast.error('Please sign in to upload images');
@@ -99,63 +103,74 @@ export function DecodePage() {
         return;
       }
 
-      const img = new Image();
-      const dimensionsPromise = new Promise<{ width: number; height: number }>((resolve, reject) => {
-        img.onload = () => resolve({ width: img.width, height: img.height });
-        img.onerror = () => reject(new Error('Failed to load image dimensions'));
-        img.src = objectUrl;
-      });
-
+      console.log('[upload] Step 1: Requesting direct upload URL...');
+      
+      // Step 1: Get upload URL from our Worker
       const { uploadURL, mediaAssetId: assetId, cfImageId: imageId } = await requestDirectUpload();
+      
+      if (!uploadURL || !assetId || !imageId) {
+        throw new Error('Failed to get upload URL');
+      }
 
-      logUploadDebug('direct-upload.ok', {
+      console.log('[upload] Step 2: Got upload URL, starting upload to Cloudflare...');
+      logUploadDebug('direct-upload.received', {
         mediaAssetId: assetId,
         cfImageId: imageId,
-        uploadURLHost: new URL(uploadURL).host,
-        now_iso: new Date().toISOString()
+        uploadURLHost: new URL(uploadURL).host
       });
 
-      setLastUploadDebug({
-        uploadURL,
-        mediaAssetId: assetId,
-        cfImageId: imageId,
-        fileName: file.name,
-        size: file.size,
-        type: file.type,
-        startedAt: new Date().toISOString()
-      });
+      // Step 2: Upload to Cloudflare
+      const uploadResult = await uploadToCloudflare(
+        uploadURL, 
+        file, 
+        setUploadProgress, 
+        controller.signal
+      );
 
-      await uploadToCloudflare(uploadURL, file, setUploadProgress, controller.signal);
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Upload to Cloudflare failed');
+      }
 
-      logUploadDebug('browser.put.result', { success: true });
+      console.log('[upload] Step 3: Upload successful, verifying with backend...');
+      setUploadProgress(100);
 
-      const dimensions = await dimensionsPromise.catch(() => ({ width: undefined, height: undefined }));
+      // Step 3: Verify upload and get metadata from Cloudflare
+      const verifyResponse = await markIngestComplete(assetId, imageId);
+      
+      // Check if the response indicates the image was found in Cloudflare
+      if (verifyResponse.error?.includes('not found in Cloudflare')) {
+        throw new Error('Upload verification failed - image not saved properly');
+      }
 
-      await markIngestComplete(assetId, imageId, dimensions.width, dimensions.height, file.size);
-
+      console.log('[upload] Step 4: Upload verified and metadata saved');
+      
+      // Success!
       setMediaAssetId(assetId);
       setCfImageId(imageId);
       setUploadSuccess(true);
-      toast.success('Image uploaded successfully');
+      toast.success('Image uploaded and verified successfully');
+      
     } catch (error: any) {
+      console.error('[upload] Upload failed:', error);
+      
       if (error.message === 'Upload cancelled') {
-        console.log('[upload] User cancelled upload');
         toast.info('Upload cancelled');
+      } else if (error.message?.includes('verification failed')) {
+        toast.error('Upload appeared to succeed but image not found. Please try again.');
+      } else if (error.message?.includes('expired')) {
+        toast.error('Upload link expired. Please try again.');
+      } else if (error.message?.includes('Network')) {
+        toast.error('Network error. Please check your connection.');
       } else {
-        console.error('Upload error:', error);
-        logUploadDebug('browser.put.catch', {
-          message: error?.message,
-          stack: error?.stack
-        });
-
-        if (error.message?.includes('expired')) {
-          toast.error('Upload link expired. Please retry.');
-        } else if (error.message?.includes('Network')) {
-          toast.error('Network error. Please check your connection.');
-        } else {
-          toast.error('Failed to upload image. Please try again.');
-        }
+        toast.error(error.message || 'Failed to upload image. Please try again.');
       }
+      
+      // Reset state on error
+      setSelectedFile(null);
+      setPreviewUrl(null);
+      setMediaAssetId(null);
+      setCfImageId(null);
+      
     } finally {
       setIsUploading(false);
       setAbortController(null);
