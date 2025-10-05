@@ -55,7 +55,7 @@ export async function apiCall<T = unknown>(
     }
 
     const url = `${API_BASE}${endpoint}`;
-    const timeout = endpoint === '/decode' ? 60000 : 15000;
+    const timeout = endpoint.startsWith('/decode') ? 60000 : 15000;
 
     console.log('[API]', options.method || 'GET', url, { hasToken: true, timeout });
 
@@ -157,3 +157,21 @@ export const api = {
   delete: <T = unknown>(endpoint: string, options?: RequestInit) =>
     apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
 };
+
+export interface DecodeImagePayload {
+  image_base64: string;
+  model?: string;
+  mime_type?: string;
+}
+
+export interface CreatePostPayload {
+  analysis: unknown;
+  image_base64: string;
+  model: string;
+}
+
+export const decodeImage = <T = unknown>(model: string, payload: DecodeImagePayload) =>
+  api.post<T>(`/decode/${model}`, { ...payload, model });
+
+export const createPostRecord = <T = unknown>(payload: CreatePostPayload) =>
+  api.post<T>('/posts/create', payload);
