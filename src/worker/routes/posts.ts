@@ -1,12 +1,13 @@
 import { json, bad } from '../lib/json';
-import { requireUser, getAuthedClient } from '../lib/auth';
+import { requireUser } from '../lib/auth';
+import { supa } from '../lib/supa';
 import type { Env } from '../types';
 
 export async function createPost(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [posts]` : '[posts]';
 
   try {
-    const { user, token } = await requireUser(env, req, reqId);
+    const { user } = await requireUser(env, req, reqId);
     const body = await req.json();
 
     const { analysis, image_base64, model } = body || {};
@@ -14,7 +15,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
       return bad('Missing analysis, image_base64, or model', 400);
     }
 
-    const client = getAuthedClient(env, token);
+    const client = supa(env);
 
     const sanitizedImage = image_base64.trim();
     if (!sanitizedImage) {

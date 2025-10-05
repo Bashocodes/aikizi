@@ -1,9 +1,28 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { createPostRecord, decodeImage } from '../lib/api';
+import { createPost, decodeImage } from '../lib/api';
 import { toast } from '../lib/toast';
 import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle, Loader2, Send } from 'lucide-react';
+
+async function readFileAsBase64(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      if (!base64) {
+        reject(new Error('Invalid image data'));
+        return;
+      }
+      resolve(base64);
+    };
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'));
+    };
+  });
+}
 
 interface DecodeResult {
   styleCodes: string[];
@@ -23,7 +42,7 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { tokenBalance, refreshTokenBalance } = useAuth();
+  const { tokenBalance, refreshTokenBalance, user } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('gpt-5');
@@ -35,7 +54,6 @@ export function DecodePage() {
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
   const lastDecodeKeyRef = useRef<string | null>(null);
 
@@ -86,19 +104,16 @@ export function DecodePage() {
     setDecodeError(null);
     setImageBase64(null);
     setInsufficientTokens(false);
-    setImageMimeType(file.type || 'image/jpeg');
     lastDecodeKeyRef.current = null;
 
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => {
-      const base64Data = (reader.result as string)?.split(',')[1] || null;
-      setImageBase64(base64Data);
-    };
-    reader.onerror = () => {
-      toast.error('Failed to read image. Please try another file.');
-      setImageBase64(null);
-    };
+    readFileAsBase64(file)
+      .then((base64Data) => {
+        setImageBase64(base64Data);
+      })
+      .catch(() => {
+        toast.error('Failed to read image. Please try another file.');
+        setImageBase64(null);
+      });
   };
 
   const handleDecode = useCallback(async () => {
@@ -117,6 +132,11 @@ export function DecodePage() {
       return;
     }
 
+    if (!user?.id) {
+      toast.error('You must be signed in to decode images.');
+      return;
+    }
+
     if (tokenBalance < 1) {
       setInsufficientTokens(true);
       return;
@@ -130,10 +150,7 @@ export function DecodePage() {
     console.log('[decode] starting decode', { model: selectedModel });
 
     try {
-      const response = await decodeImage(selectedModel, {
-        image_base64: imageBase64,
-        mime_type: imageMimeType,
-      });
+      const response = await decodeImage(selectedModel, imageBase64, user.id);
 
       if (!response || typeof response !== 'object') {
         throw new Error('Unexpected response from server');
@@ -193,7 +210,7 @@ export function DecodePage() {
       setIsDecoding(false);
       await refreshTokenBalance();
     }
-  }, [imageBase64, imageMimeType, refreshTokenBalance, selectedFile, selectedModel, tokenBalance]);
+  }, [imageBase64, refreshTokenBalance, selectedFile, selectedModel, tokenBalance, user?.id]);
 
   const handlePost = async () => {
     if (!result || !imageBase64) {
@@ -204,11 +221,7 @@ export function DecodePage() {
     setIsPosting(true);
 
     try {
-      const response = await createPostRecord({
-        analysis: result,
-        image_base64: imageBase64,
-        model: selectedModel,
-      });
+      const response = await createPost(selectedModel, imageBase64, result);
 
       if (!response || typeof response !== 'object') {
         throw new Error('Unexpected response from server');
@@ -224,7 +237,7 @@ export function DecodePage() {
         return;
       }
 
-      toast.success('Post published successfully.');
+      toast.success('Post created successfully');
     } catch (error) {
       console.error('Post error:', error);
       toast.error('Failed to publish post.');
@@ -235,6 +248,10 @@ export function DecodePage() {
 
   useEffect(() => {
     if (!imageBase64 || !selectedFile) {
+      return;
+    }
+
+    if (!user?.id) {
       return;
     }
 
@@ -255,7 +272,7 @@ export function DecodePage() {
 
     lastDecodeKeyRef.current = decodeKey;
     void handleDecode();
-  }, [handleDecode, imageBase64, isDecoding, selectedFile, selectedModel, tokenBalance]);
+  }, [handleDecode, imageBase64, isDecoding, selectedFile, selectedModel, tokenBalance, user?.id]);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
