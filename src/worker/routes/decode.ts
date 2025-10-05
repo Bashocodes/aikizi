@@ -9,6 +9,7 @@ interface DecodeBody {
   image_base64?: string;
   model?: string;
   mime_type?: string;
+  user_id?: string;
 }
 
 interface AnalysisPayload {
@@ -86,6 +87,10 @@ export async function decode(env: Env, req: Request, modelParam: string, reqId?:
     console.log(`${logPrefix} Invalid JSON`);
     await refundToken(dbClient, userData.id, logPrefix);
     return cors(json({ success: false, error: 'invalid input' }, 422));
+  }
+
+  if (body.user_id && body.user_id !== user.id) {
+    console.warn(`${logPrefix} user_id mismatch body=${body.user_id} auth=${user.id}`);
   }
 
   const rawBase64 = typeof body.image_base64 === 'string' ? body.image_base64.trim() : '';

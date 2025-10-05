@@ -129,7 +129,7 @@ export function PostDetailPage() {
         return;
       }
 
-      const response = await api.post('/sref/unlock', {
+      const response = await api.post('/v1/sref/unlock', {
         post_id: postId,
       });
 

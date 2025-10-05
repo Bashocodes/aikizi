@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 
-// API base URL - always use https://aikizi.xyz/v1 for production
-const API_BASE = 'https://aikizi.xyz/v1';
+// API base URL - always use https://aikizi.xyz for production
+const API_BASE = 'https://aikizi.xyz';
 
 export interface ApiError {
   ok: false;
@@ -55,7 +55,7 @@ export async function apiCall<T = unknown>(
     }
 
     const url = `${API_BASE}${endpoint}`;
-    const timeout = endpoint.startsWith('/decode') ? 60000 : 15000;
+    const timeout = endpoint.startsWith('/v1/decode') ? 60000 : 15000;
 
     console.log('[API]', options.method || 'GET', url, { hasToken: true, timeout });
 
@@ -158,20 +158,8 @@ export const api = {
     apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
 };
 
-export interface DecodeImagePayload {
-  image_base64: string;
-  model?: string;
-  mime_type?: string;
-}
+export const decodeImage = <T = unknown>(model: string, image_base64: string, user_id: string) =>
+  api.post<T>(`/v1/decode/${model}`, { image_base64, user_id, model });
 
-export interface CreatePostPayload {
-  analysis: unknown;
-  image_base64: string;
-  model: string;
-}
-
-export const decodeImage = <T = unknown>(model: string, payload: DecodeImagePayload) =>
-  api.post<T>(`/decode/${model}`, { ...payload, model });
-
-export const createPostRecord = <T = unknown>(payload: CreatePostPayload) =>
-  api.post<T>('/posts/create', payload);
+export const createPost = <T = unknown>(model: string, image_base64: string, analysis: unknown) =>
+  api.post<T>('/v1/posts/create', { model, image_base64, analysis });
