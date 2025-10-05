@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { createPostRecord, decodeImage } from '../lib/api';
@@ -37,6 +37,7 @@ export function DecodePage() {
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
+  const lastDecodeKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleToast = (event: Event) => {
@@ -86,6 +87,7 @@ export function DecodePage() {
     setImageBase64(null);
     setInsufficientTokens(false);
     setImageMimeType(file.type || 'image/jpeg');
+    lastDecodeKeyRef.current = null;
 
     const reader = new FileReader();
     reader.readAsDataURL(file);
@@ -99,7 +101,7 @@ export function DecodePage() {
     };
   };
 
-  const handleDecode = async () => {
+  const handleDecode = useCallback(async () => {
     if (!selectedFile) {
       alert('Please upload an image first');
       return;
@@ -191,7 +193,7 @@ export function DecodePage() {
       setIsDecoding(false);
       await refreshTokenBalance();
     }
-  };
+  }, [imageBase64, imageMimeType, refreshTokenBalance, selectedFile, selectedModel, tokenBalance]);
 
   const handlePost = async () => {
     if (!result || !imageBase64) {
@@ -230,6 +232,30 @@ export function DecodePage() {
       setIsPosting(false);
     }
   };
+
+  useEffect(() => {
+    if (!imageBase64 || !selectedFile) {
+      return;
+    }
+
+    if (tokenBalance < 1) {
+      setInsufficientTokens(true);
+      return;
+    }
+
+    if (isDecoding) {
+      return;
+    }
+
+    const decodeKey = `${selectedModel}:${imageBase64}`;
+
+    if (lastDecodeKeyRef.current === decodeKey) {
+      return;
+    }
+
+    lastDecodeKeyRef.current = decodeKey;
+    void handleDecode();
+  }, [handleDecode, imageBase64, isDecoding, selectedFile, selectedModel, tokenBalance]);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
@@ -273,11 +299,26 @@ export function DecodePage() {
           {decodeError && (
             <div className="mt-4 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4 flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
-                  Decode Error
-                </h3>
-                <p className="text-sm text-yellow-800 dark:text-yellow-200">{decodeError}</p>
+              <div className="flex-1 space-y-3">
+                <div>
+                  <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
+                    Decode Error
+                  </h3>
+                  <p className="text-sm text-yellow-800 dark:text-yellow-200">{decodeError}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setDecodeError(null);
+                    if (imageBase64) {
+                      lastDecodeKeyRef.current = `${selectedModel}:${imageBase64}`;
+                    }
+                    void handleDecode();
+                  }}
+                  className="inline-flex items-center gap-2 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm font-semibold transition-colors"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Retry decode
+                </button>
               </div>
               <button
                 onClick={() => setDecodeError(null)}
@@ -342,7 +383,10 @@ export function DecodePage() {
                         name="model"
                         value={option.value}
                         checked={selectedModel === option.value}
-                        onChange={(e) => setSelectedModel(e.target.value)}
+                        onChange={(e) => {
+                          setSelectedModel(e.target.value);
+                          lastDecodeKeyRef.current = null;
+                        }}
                         className="w-4 h-4"
                       />
                       <span className="text-gray-900 dark:text-white font-medium">
@@ -374,19 +418,23 @@ export function DecodePage() {
               </button>
             ) : (
               <button
-                onClick={handleDecode}
-                disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding || !imageBase64}
-                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                disabled
+                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors opacity-70 cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isDecoding ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    Decoding...
+                    Analyzing image…
+                  </>
+                ) : selectedFile ? (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Preparing analysis…
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-5 h-5" />
-                    Decode (1 token)
+                    Upload an image to decode
                   </>
                 )}
               </button>
