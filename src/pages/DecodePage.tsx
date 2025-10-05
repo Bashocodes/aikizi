@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { api, logUploadDebug, uploadWithDebug } from '../lib/api';
+import { api, logUploadDebug, uploadWithDebug, requestDirectUpload, uploadToCloudflare, markIngestComplete } from '../lib/api';
+import { toast } from '../lib/toast';
 import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
 
 interface DecodeResult {
@@ -38,13 +39,39 @@ export function DecodePage() {
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [lastUploadDebug, setLastUploadDebug] = useState<any>(null);
   const [lastUploadInit, setLastUploadInit] = useState<RequestInit | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [cfImageId, setCfImageId] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
+
+  useEffect(() => {
+    const handleToast = (e: any) => {
+      setToastMessage(e.detail);
+      setTimeout(() => setToastMessage(null), 4000);
+    };
+    window.addEventListener('toast', handleToast);
+    return () => window.removeEventListener('toast', handleToast);
+  }, []);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 25 * 1024 * 1024) {
-      alert('File size must be under 25MB');
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
+    }
+
+    const MAX_FILE_SIZE = 25 * 1024 * 1024;
+    const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error('File size must be under 25MB');
+      return;
+    }
+
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toast.error('Only PNG, JPEG, and WebP images are supported');
       return;
     }
 
@@ -54,98 +81,92 @@ export function DecodePage() {
     setResult(null);
     setDecodeError(null);
     setMediaAssetId(null);
+    setCfImageId(null);
     setUploadSuccess(false);
+    setUploadProgress(0);
 
     setIsUploading(true);
+
+    const controller = new AbortController();
+    setAbortController(controller);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
-        alert('Please sign in to upload images');
+        toast.error('Please sign in to upload images');
         setIsUploading(false);
+        setAbortController(null);
         return;
       }
 
       const img = new Image();
       const dimensionsPromise = new Promise<{ width: number; height: number }>((resolve, reject) => {
         img.onload = () => resolve({ width: img.width, height: img.height });
-        img.onerror = reject;
+        img.onerror = () => reject(new Error('Failed to load image dimensions'));
         img.src = objectUrl;
       });
 
-      const directUploadRes = await api.post('/images/direct-upload', {});
-
-      if (!directUploadRes.ok || !directUploadRes.uploadURL) {
-        throw new Error('Failed to get upload URL');
-      }
-
-      const { uploadURL, mediaAssetId: assetId, cfImageId } = directUploadRes;
+      const { uploadURL, mediaAssetId: assetId, cfImageId: imageId } = await requestDirectUpload();
 
       logUploadDebug('direct-upload.ok', {
         mediaAssetId: assetId,
-        cfImageId,
+        cfImageId: imageId,
         uploadURLHost: new URL(uploadURL).host,
         now_iso: new Date().toISOString()
       });
 
-      const formData = new FormData();
-      formData.append('file', file);
-
-      logUploadDebug('browser.put.prepare', {
-        size: file.size,
-        type: file.type,
-        name: file.name,
-        methodUsed: 'POST'
-      });
-
-      const uploadInit: RequestInit = {
-        method: 'POST',
-        body: formData,
-      };
-
       setLastUploadDebug({
         uploadURL,
         mediaAssetId: assetId,
-        cfImageId,
+        cfImageId: imageId,
         fileName: file.name,
         size: file.size,
         type: file.type,
         startedAt: new Date().toISOString()
       });
-      setLastUploadInit(uploadInit);
 
-      const uploadRes = await uploadWithDebug(uploadURL, uploadInit);
+      await uploadToCloudflare(uploadURL, file, setUploadProgress, controller.signal);
 
-      logUploadDebug('browser.put.result', {
-        status: uploadRes.status,
-        ok: uploadRes.ok
-      });
+      logUploadDebug('browser.put.result', { success: true });
 
-      if (!uploadRes.ok) {
-        throw new Error('Failed to upload image');
-      }
+      const dimensions = await dimensionsPromise.catch(() => ({ width: undefined, height: undefined }));
 
-      const dimensions = await dimensionsPromise;
-
-      await api.post('/images/ingest-complete', {
-        mediaAssetId: assetId,
-        cfImageId,
-        width: dimensions.width,
-        height: dimensions.height,
-        bytes: file.size,
-      });
+      await markIngestComplete(assetId, imageId, dimensions.width, dimensions.height, file.size);
 
       setMediaAssetId(assetId);
+      setCfImageId(imageId);
       setUploadSuccess(true);
+      toast.success('Image uploaded successfully');
     } catch (error: any) {
-      console.error('Upload error:', error);
-      logUploadDebug('browser.put.catch', {
-        message: error?.message,
-        stack: error?.stack
-      });
-      alert('Failed to upload image. Please try again.');
+      if (error.message === 'Upload cancelled') {
+        console.log('[upload] User cancelled upload');
+        toast.info('Upload cancelled');
+      } else {
+        console.error('Upload error:', error);
+        logUploadDebug('browser.put.catch', {
+          message: error?.message,
+          stack: error?.stack
+        });
+
+        if (error.message?.includes('expired')) {
+          toast.error('Upload link expired. Please retry.');
+        } else if (error.message?.includes('Network')) {
+          toast.error('Network error. Please check your connection.');
+        } else {
+          toast.error('Failed to upload image. Please try again.');
+        }
+      }
     } finally {
       setIsUploading(false);
+      setAbortController(null);
+      setUploadProgress(0);
+    }
+  };
+
+  const handleCancelUpload = () => {
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
     }
   };
 
@@ -348,10 +369,22 @@ export function DecodePage() {
                   <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
                     <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
                     {isUploading && (
-                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                        <div className="text-white text-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-                          <p className="text-sm">Uploading...</p>
+                      <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-4">
+                        <div className="text-white text-center w-full max-w-xs">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-3"></div>
+                          <p className="text-sm mb-3">Uploading... {uploadProgress}%</p>
+                          <div className="w-full bg-gray-700 rounded-full h-2 mb-3">
+                            <div
+                              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${uploadProgress}%` }}
+                            ></div>
+                          </div>
+                          <button
+                            onClick={handleCancelUpload}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors"
+                          >
+                            Cancel Upload
+                          </button>
                         </div>
                       </div>
                     )}
@@ -532,6 +565,26 @@ export function DecodePage() {
           )}
         </div>
       </div>
+
+      {toastMessage && (
+        <div className={`fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 max-w-md ${
+          toastMessage.type === 'error' ? 'bg-red-600 text-white' :
+          toastMessage.type === 'success' ? 'bg-green-600 text-white' :
+          'bg-blue-600 text-white'
+        }`}>
+          <div className="flex items-start gap-3">
+            <div className="flex-1">
+              <p className="font-medium">{toastMessage.message}</p>
+            </div>
+            <button
+              onClick={() => setToastMessage(null)}
+              className="text-white/80 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {typeof window !== 'undefined' && localStorage.getItem('aikizi_debug') === '1' && lastUploadDebug && (
         <div className="fixed bottom-4 right-4 bg-gray-900 text-white p-4 rounded-lg shadow-2xl max-w-sm border border-gray-700">

@@ -207,3 +207,151 @@ export async function uploadWithDebug(req: RequestInfo | URL, init?: RequestInit
     throw e;
   }
 }
+
+/**
+ * Request a direct upload URL from Cloudflare Images
+ */
+export async function requestDirectUpload(): Promise<{ uploadURL: string; mediaAssetId: string; cfImageId: string }> {
+  console.log('[upload] requestDirectUpload start');
+  const t0 = performance.now();
+
+  const response = await api.post<{ uploadURL: string; mediaAssetId: string; cfImageId: string }>(
+    '/images/direct-upload',
+    {}
+  );
+
+  const t1 = performance.now();
+
+  if (!response.ok) {
+    console.error('[upload] requestDirectUpload failed', { error: response.error });
+    throw new Error(response.error || 'Failed to request upload URL');
+  }
+
+  console.log('[upload] requestDirectUpload end', {
+    dur_ms: Math.round(t1 - t0),
+    hasUploadURL: !!response.uploadURL,
+    hasMediaAssetId: !!response.mediaAssetId,
+    hasCfImageId: !!response.cfImageId
+  });
+
+  return {
+    uploadURL: response.uploadURL,
+    mediaAssetId: response.mediaAssetId,
+    cfImageId: response.cfImageId
+  };
+}
+
+/**
+ * Upload file to Cloudflare Images with progress tracking
+ * Uses XMLHttpRequest for progress events
+ */
+export async function uploadToCloudflare(
+  uploadURL: string,
+  file: Blob,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
+): Promise<Response> {
+  console.log('[upload] POST upload.imagedelivery.net start', {
+    fileSize: file.size,
+    fileType: file.type
+  });
+  const t0 = performance.now();
+
+  return new Promise<Response>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        xhr.abort();
+        reject(new Error('Upload cancelled'));
+      });
+    }
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        onProgress(pct);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      const t1 = performance.now();
+      console.log('[upload] POST upload.imagedelivery.net end', {
+        status: xhr.status,
+        ok: xhr.status >= 200 && xhr.status < 300,
+        dur_ms: Math.round(t1 - t0)
+      });
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const response = new Response(xhr.responseText, {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          headers: new Headers()
+        });
+        resolve(response);
+      } else {
+        console.error('[upload] POST upload.imagedelivery.net error', {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          responseText: xhr.responseText
+        });
+        reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.statusText}`));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      const t1 = performance.now();
+      console.error('[upload] POST upload.imagedelivery.net network error', {
+        dur_ms: Math.round(t1 - t0)
+      });
+      reject(new Error('Network error during upload'));
+    });
+
+    xhr.addEventListener('abort', () => {
+      const t1 = performance.now();
+      console.log('[upload] POST upload.imagedelivery.net aborted', {
+        dur_ms: Math.round(t1 - t0)
+      });
+      reject(new Error('Upload cancelled'));
+    });
+
+    xhr.open('POST', uploadURL);
+    xhr.send(file);
+  });
+}
+
+/**
+ * Mark upload as complete and update metadata
+ */
+export async function markIngestComplete(
+  mediaAssetId: string,
+  cfImageId: string,
+  width?: number,
+  height?: number,
+  bytes?: number
+): Promise<void> {
+  console.log('[upload] ingestComplete start', { mediaAssetId, cfImageId });
+  const t0 = performance.now();
+
+  const response = await api.post('/images/ingest-complete', {
+    mediaAssetId,
+    cfImageId,
+    width,
+    height,
+    bytes
+  });
+
+  const t1 = performance.now();
+
+  if (!response.ok) {
+    console.error('[upload] ingestComplete failed', {
+      error: response.error,
+      dur_ms: Math.round(t1 - t0)
+    });
+    throw new Error(response.error || 'Failed to complete upload');
+  }
+
+  console.log('[upload] ingestComplete success', {
+    dur_ms: Math.round(t1 - t0)
+  });
+}
