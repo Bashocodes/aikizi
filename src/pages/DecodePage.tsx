@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { createPost, decodeImage } from '../lib/api';
@@ -55,6 +55,7 @@ export function DecodePage() {
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
+  const activeRequestRef = useRef<number>(0);
 
   useEffect(() => {
     const handleToast = (event: Event) => {
@@ -75,73 +76,36 @@ export function DecodePage() {
     };
   }, [previewUrl]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const MAX_FILE_SIZE = 25 * 1024 * 1024;
-    const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
-
-    if (file.size > MAX_FILE_SIZE) {
-      toast.error('File size must be under 25MB');
-      return;
-    }
-
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      toast.error('Only PNG, JPEG, and WebP images are supported');
-      return;
-    }
-
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
-
-    setSelectedFile(file);
-    const objectUrl = URL.createObjectURL(file);
-    setPreviewUrl(objectUrl);
-    setResult(null);
-    setDecodeError(null);
-    setImageBase64(null);
-    setInsufficientTokens(false);
-  };
-
-  const handleDecode = async () => {
-    if (!selectedFile) {
-      alert('Please upload an image first');
-      return;
-    }
-
-    if (!selectedModel) {
-      alert('Please choose a model');
-      return;
-    }
-
+  const processImage = async (
+    file: File,
+    base64: string,
+    requestId: number,
+    model: string,
+  ) => {
     if (!user?.id) {
       toast.error('You must be signed in to decode images.');
       return;
     }
 
-    if (tokenBalance < 1) {
-      setInsufficientTokens(true);
+    if (requestId !== activeRequestRef.current) {
+      console.log('[decode] stale request aborted before start', { requestId, current: activeRequestRef.current });
       return;
     }
 
-    setIsDecoding(true);
     setInsufficientTokens(false);
     setDecodeError(null);
     setResult(null);
+    setIsDecoding(true);
+    setIsPosting(false);
 
     try {
-      const base64 = await readFileAsBase64(selectedFile);
-      setImageBase64(base64);
-
       console.log('[decode] start', {
-        model: selectedModel,
-        size: selectedFile.size,
-        type: selectedFile.type,
+        model,
+        size: file.size,
+        type: file.type,
       });
 
-      const response = await decodeImage(selectedModel, base64, user.id);
+      const response = await decodeImage(model, base64, user.id, file.type || 'image/jpeg');
 
       if (!response || typeof response !== 'object') {
         throw new Error('Unexpected response from server');
@@ -171,41 +135,138 @@ export function DecodePage() {
         sound: toString(analysisRecord['sound']) || (promptsRecord ? toString(promptsRecord['sound']) : ''),
       };
 
-      setResult(normalized);
+      if (requestId === activeRequestRef.current) {
+        setResult(normalized);
+        setIsDecoding(false);
+      } else {
+        console.log('[decode] skipping state update for stale request', {
+          requestId,
+          current: activeRequestRef.current,
+        });
+      }
+
       console.log('[decode] done', { ok: true });
+
+      if (requestId !== activeRequestRef.current) {
+        console.log('[post] skipped due to newer request', { requestId, current: activeRequestRef.current });
+      } else {
+        setIsPosting(true);
+        try {
+          console.log('[post] create', { model });
+          const responsePost = await createPost({ model, image_base64: base64, analysis: normalized });
+          console.log('[post] ok', { postId: responsePost.postId });
+          toast.success('Post created successfully');
+        } catch (error) {
+          console.error('Post error:', error);
+          toast.error('Failed to publish post.');
+        } finally {
+          if (requestId === activeRequestRef.current) {
+            setIsPosting(false);
+          }
+        }
+      }
     } catch (error) {
       console.error('Decode error:', error);
       const message = error instanceof Error ? error.message : 'Failed to decode image. Please try again.';
-      if (message.toLowerCase().includes('insufficient tokens')) {
-        setInsufficientTokens(true);
-      } else {
-        setDecodeError('Failed to decode image. Please try again.');
+      if (requestId === activeRequestRef.current) {
+        if (message.toLowerCase().includes('insufficient tokens')) {
+          setInsufficientTokens(true);
+        } else {
+          setDecodeError('Failed to decode image. Please try again.');
+        }
+        setIsDecoding(false);
       }
     } finally {
-      setIsDecoding(false);
-      await refreshTokenBalance();
+      try {
+        await refreshTokenBalance();
+      } catch (balanceError) {
+        console.warn('Failed to refresh token balance', balanceError);
+      }
     }
   };
 
-  const handlePost = async () => {
-    if (!result || !imageBase64) {
-      toast.error('Decode an image before posting');
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const MAX_FILE_SIZE = 25 * 1024 * 1024;
+    const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error('File size must be under 25MB');
+      e.target.value = '';
       return;
     }
 
-    setIsPosting(true);
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toast.error('Only PNG, JPEG, and WebP images are supported');
+      e.target.value = '';
+      return;
+    }
+
+    if (!user?.id) {
+      toast.error('You must be signed in to decode images.');
+      e.target.value = '';
+      return;
+    }
+
+    if (tokenBalance < 1) {
+      setInsufficientTokens(true);
+      e.target.value = '';
+      return;
+    }
+
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
+
+    setSelectedFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+    setResult(null);
+    setDecodeError(null);
+    setImageBase64(null);
+    setInsufficientTokens(false);
+
+    const requestId = Date.now();
+    activeRequestRef.current = requestId;
 
     try {
-      console.log('[post] create', { model: selectedModel });
-      const response = await createPost({ model: selectedModel, image_base64: imageBase64, analysis: result });
-      toast.success('Post created successfully');
-      console.log('[post] ok', { postId: response.postId });
+      const base64 = await readFileAsBase64(file);
+      if (requestId !== activeRequestRef.current) {
+        return;
+      }
+      setImageBase64(base64);
+      void processImage(file, base64, requestId, selectedModel);
     } catch (error) {
-      console.error('Post error:', error);
-      toast.error('Failed to publish post.');
+      console.error('File read error:', error);
+      toast.error('Failed to read file. Please try again.');
     } finally {
-      setIsPosting(false);
+      e.target.value = '';
     }
+  };
+
+  const handleReprocess = async () => {
+    if (!selectedFile || !imageBase64) {
+      toast.error('Upload an image before decoding.');
+      return;
+    }
+
+    if (!user?.id) {
+      toast.error('You must be signed in to decode images.');
+      return;
+    }
+
+    if (tokenBalance < 1) {
+      setInsufficientTokens(true);
+      return;
+    }
+
+    const requestId = Date.now();
+    activeRequestRef.current = requestId;
+    setDecodeError(null);
+    setInsufficientTokens(false);
+    void processImage(selectedFile, imageBase64, requestId, selectedModel);
   };
 
   return (
@@ -257,11 +318,11 @@ export function DecodePage() {
                   </h3>
                   <p className="text-sm text-yellow-800 dark:text-yellow-200">{decodeError}</p>
                 </div>
-                <button
-                  onClick={() => {
-                    setDecodeError(null);
-                    void handleDecode();
-                  }}
+                  <button
+                    onClick={() => {
+                      setDecodeError(null);
+                      void handleReprocess();
+                    }}
                   className="inline-flex items-center gap-2 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm font-semibold transition-colors"
                 >
                   <Sparkles className="w-4 h-4" />
@@ -345,48 +406,33 @@ export function DecodePage() {
               </label>
             </div>
 
-            {result ? (
-              <button
-                onClick={handlePost}
-                disabled={isPosting || !imageBase64}
-                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {isPosting ? (
-                  <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    Posting...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-5 h-5" />
-                    Post
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                onClick={() => void handleDecode()}
-                disabled={!selectedFile || isDecoding}
-                className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {isDecoding ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Analyzing image…
-                  </>
-                ) : selectedFile ? (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Decode
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Upload an image to decode
-                  </>
-                )}
-              </button>
-            )}
+            <button
+              onClick={() => void handleReprocess()}
+              disabled={!selectedFile || !imageBase64 || isDecoding || isPosting}
+              className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isDecoding ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Analyzing image…
+                </>
+              ) : isPosting ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Publishing post…
+                </>
+              ) : selectedFile ? (
+                <>
+                  <Send className="w-5 h-5" />
+                  Re-run decode & publish
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-5 h-5" />
+                  Upload an image to start
+                </>
+              )}
+            </button>
           </div>
 
           <div className="space-y-6">

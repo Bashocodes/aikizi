@@ -35,6 +35,9 @@ export async function apiCall<T = unknown>(
   options: RequestInit = {},
   isRetry = false
 ): Promise<ApiResponse<T>> {
+  if (endpoint.startsWith('/v1/images/')) {
+    console.warn('[API] Attempted call to legacy upload route:', endpoint);
+  }
   try {
     await waitForAuth();
 
@@ -159,8 +162,21 @@ export const api = {
 };
 
 export type DecodeResponse = { success: boolean; analysis: any };
-export async function decodeImage(model: string, image_base64: string, user_id?: string): Promise<DecodeResponse> {
-  const res = await api.post(`/v1/decode/${encodeURIComponent(model)}`, { image_base64, user_id });
+export async function decodeImage(
+  model: string,
+  image_base64: string,
+  user_id?: string,
+  mime_type?: string,
+): Promise<DecodeResponse> {
+  const payload: Record<string, unknown> = { image_base64 };
+  if (user_id) {
+    payload.user_id = user_id;
+  }
+  if (mime_type) {
+    payload.mime_type = mime_type;
+  }
+
+  const res = await api.post(`/v1/decode/${encodeURIComponent(model)}`, payload);
   if (!res || (typeof res === 'object' && 'ok' in res && res.ok === false)) {
     const error = typeof res === 'object' && res && 'error' in res ? (res as ApiError).error : null;
     throw new Error(error || 'Decode failed');
