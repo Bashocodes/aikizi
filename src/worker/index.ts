@@ -3,7 +3,6 @@ import { json, bad } from './lib/json';
 import { preflight, allowOrigin } from './lib/cors';
 import { ensureAccount, balance } from './routes/account';
 import { spend } from './routes/wallet';
-import { directUpload, ensureVariants, ingestComplete } from './routes/images';
 import { decode } from './routes/decode';
 import { publish } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
@@ -39,14 +38,9 @@ export default {
         response = allowOrigin(env, req, await balance(env, req, reqId));
       } else if (cleanPath === '/v1/spend' && req.method==='POST') {
         response = allowOrigin(env, req, await spend(env, req));
-      } else if (cleanPath === '/v1/images/direct-upload' && req.method==='POST') {
-        response = allowOrigin(env, req, await directUpload(env, req, reqId));
-      } else if (cleanPath === '/v1/images/ingest-complete' && req.method==='POST') {
-        response = allowOrigin(env, req, await ingestComplete(env, req, reqId));
-      } else if (cleanPath === '/v1/images/ensure-variants' && req.method==='POST') {
-        response = allowOrigin(env, req, await ensureVariants(env, req));
-      } else if (cleanPath === '/v1/decode' && req.method==='POST') {
-        response = allowOrigin(env, req, await decode(env, req, reqId));
+      } else if (cleanPath.startsWith('/v1/decode/') && req.method==='POST') {
+        const modelParam = cleanPath.replace('/v1/decode/', '');
+        response = allowOrigin(env, req, await decode(env, req, modelParam, reqId));
       } else if (cleanPath === '/v1/posts/create' && req.method==='POST') {
         response = allowOrigin(env, req, await createPost(env, req, reqId));
       } else if (cleanPath === '/v1/publish' && req.method==='POST') {
@@ -61,8 +55,6 @@ export default {
         response = allowOrigin(env, req, await debugAuth(env, req, reqId));
       } else if (cleanPath === '/v1/debug/decode' && req.method==='GET') {
         response = allowOrigin(env, req, await debugDecode(env, req, reqId));
-      } else if (cleanPath.startsWith('/v1/images/')) {
-        response = allowOrigin(env, req, bad('images route not matched', 404));
       } else {
         response = allowOrigin(env, req, bad('not found', 404));
       }

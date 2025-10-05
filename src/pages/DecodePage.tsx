@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { api } from '../lib/api';
+import { createPostRecord, decodeImage } from '../lib/api';
 import { toast } from '../lib/toast';
-import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
+import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle, Loader2, Send } from 'lucide-react';
 
 interface DecodeResult {
   styleCodes: string[];
@@ -35,6 +35,7 @@ export function DecodePage() {
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
   const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
 
   useEffect(() => {
@@ -84,6 +85,18 @@ export function DecodePage() {
     setDecodeError(null);
     setImageBase64(null);
     setInsufficientTokens(false);
+    setImageMimeType(file.type || 'image/jpeg');
+
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => {
+      const base64Data = (reader.result as string)?.split(',')[1] || null;
+      setImageBase64(base64Data);
+    };
+    reader.onerror = () => {
+      toast.error('Failed to read image. Please try another file.');
+      setImageBase64(null);
+    };
   };
 
   const handleDecode = async () => {
@@ -97,6 +110,11 @@ export function DecodePage() {
       return;
     }
 
+    if (!imageBase64) {
+      toast.error('Image is still loading. Please try again in a moment.');
+      return;
+    }
+
     if (tokenBalance < 1) {
       setInsufficientTokens(true);
       return;
@@ -105,129 +123,64 @@ export function DecodePage() {
     setIsDecoding(true);
     setInsufficientTokens(false);
     setDecodeError(null);
+    setResult(null);
 
     console.log('[decode] starting decode', { model: selectedModel });
 
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(selectedFile);
-      const imageDataUrl = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
+      const response = await decodeImage(selectedModel, {
+        image_base64: imageBase64,
+        mime_type: imageMimeType,
       });
 
-      const [mimePrefix, base64Data] = imageDataUrl.split(',');
-      if (!base64Data) {
-        throw new Error('Unable to read image data');
+      if (!response || typeof response !== 'object') {
+        throw new Error('Unexpected response from server');
       }
 
-      const mimeType = mimePrefix.match(/:(.*?);/)?.[1] || 'image/jpeg';
-      setImageBase64(base64Data);
-
-      const response = await api.post('/decode', {
-        base64: base64Data,
-        mimeType,
-        model: selectedModel,
-      });
-
-      if (response && typeof response === 'object') {
-        if ('ok' in response && response.ok === false) {
-          if (response.error?.includes('insufficient tokens')) {
-            setInsufficientTokens(true);
-          } else {
-            setDecodeError(response.error || 'Failed to decode image');
-          }
-          return;
+      if ('ok' in response && response.ok === false) {
+        const errorMessage = response.error || 'Failed to decode image';
+        if (errorMessage.includes('insufficient tokens')) {
+          setInsufficientTokens(true);
+        } else {
+          setDecodeError(errorMessage);
         }
-
-        if ('success' in response && response.success === false) {
-          const message = response.error || 'Failed to decode image';
-          if (message?.includes('insufficient tokens')) {
-            setInsufficientTokens(true);
-          } else {
-            setDecodeError(message);
-          }
-          return;
-        }
+        return;
       }
 
-        const extractContent = (payload: unknown): unknown => {
-          if (!payload || typeof payload !== 'object') return payload;
-          const record = payload as Record<string, unknown>;
-          const resultEntry = record.result;
-
-          if (resultEntry && typeof resultEntry === 'object') {
-            const resultRecord = resultEntry as Record<string, unknown>;
-            if (typeof resultRecord.content === 'string') {
-              return resultRecord.content;
-            }
-          }
-
-          if (typeof resultEntry === 'string') {
-            return resultEntry;
-          }
-
-          if (record.analysis !== undefined) {
-            return record.analysis;
-          }
-
-          if (record.content !== undefined) {
-            return record.content;
-          }
-
-          return record;
-        };
-
-        const normalizeResult = (data: unknown): DecodeResult => {
-          if (!data) {
-            return {
-              styleCodes: [],
-              tags: [],
-              subjects: [],
-            story: '',
-            mix: '',
-            expand: '',
-            sound: '',
-          };
+      if ('success' in response && response.success === false) {
+        const errorMessage = response.error || 'Failed to decode image';
+        if (errorMessage.includes('insufficient tokens')) {
+          setInsufficientTokens(true);
+        } else {
+          setDecodeError(errorMessage);
         }
+        return;
+      }
 
-          if (typeof data === 'string') {
-            try {
-              const cleaned = data
-                .replace(/```json\n?/g, '')
-                .replace(/```\n?/g, '')
-                .trim();
-              const parsed = JSON.parse(cleaned);
-              return normalizeResult(parsed);
-            } catch {
-              return {
-                styleCodes: [],
-                tags: [],
-                subjects: [],
-                story: data,
-                mix: '',
-                expand: '',
-                sound: '',
-              };
-            }
-          }
+      const analysis = 'analysis' in response ? response.analysis : null;
+      if (!analysis || typeof analysis !== 'object') {
+        throw new Error('Missing analysis in response');
+      }
 
-          const record = data as Record<string, unknown>;
-          const prompts = (record.prompts as Record<string, unknown> | undefined) || undefined;
+      const analysisRecord = analysis as Record<string, unknown>;
+      const toStringArray = (value: unknown) =>
+        Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+      const toString = (value: unknown) => (typeof value === 'string' ? value : '');
+      const promptsRecord =
+        analysisRecord['prompts'] && typeof analysisRecord['prompts'] === 'object'
+          ? (analysisRecord['prompts'] as Record<string, unknown>)
+          : undefined;
 
-          return {
-            styleCodes: (record.styleCodes as string[] | undefined) || (record.style_codes as string[] | undefined) || [],
-            tags: (record.tags as string[] | undefined) || [],
-            subjects: (record.subjects as string[] | undefined) || [],
-            story: (record.story as string | undefined) || (prompts?.story as string | undefined) || '',
-            mix: (record.mix as string | undefined) || (prompts?.mix as string | undefined) || '',
-            expand: (record.expand as string | undefined) || (prompts?.expand as string | undefined) || '',
-            sound: (record.sound as string | undefined) || (prompts?.sound as string | undefined) || '',
-          };
-        };
+      const normalized: DecodeResult = {
+        styleCodes: toStringArray(analysisRecord['styleCodes']),
+        tags: toStringArray(analysisRecord['tags']),
+        subjects: toStringArray(analysisRecord['subjects']),
+        story: toString(analysisRecord['story']) || (promptsRecord ? toString(promptsRecord['story']) : ''),
+        mix: toString(analysisRecord['mix']) || (promptsRecord ? toString(promptsRecord['mix']) : ''),
+        expand: toString(analysisRecord['expand']) || (promptsRecord ? toString(promptsRecord['expand']) : ''),
+        sound: toString(analysisRecord['sound']) || (promptsRecord ? toString(promptsRecord['sound']) : ''),
+      };
 
-      const rawContent = extractContent(response);
-      const normalized = normalizeResult(rawContent);
       setResult(normalized);
       console.log('[decode] analysis success', { hasResult: true });
       console.log('[decode] ready to post');
@@ -249,28 +202,30 @@ export function DecodePage() {
     setIsPosting(true);
 
     try {
-      const response = await api.post('/posts/create', {
+      const response = await createPostRecord({
         analysis: result,
-        imageBase64,
+        image_base64: imageBase64,
         model: selectedModel,
       });
 
-      if (response && typeof response === 'object') {
-        if ('ok' in response && response.ok === false) {
-          toast.error(response.error || 'Failed to create post');
-          return;
-        }
-
-        if ('success' in response && response.success === false) {
-          toast.error(response.error || 'Failed to create post');
-          return;
-        }
+      if (!response || typeof response !== 'object') {
+        throw new Error('Unexpected response from server');
       }
 
-      toast.success('Posted successfully');
+      if ('ok' in response && response.ok === false) {
+        toast.error(response.error || 'Failed to publish post.');
+        return;
+      }
+
+      if ('success' in response && response.success === false) {
+        toast.error(response.error || 'Failed to publish post.');
+        return;
+      }
+
+      toast.success('Post published successfully.');
     } catch (error) {
       console.error('Post error:', error);
-      toast.error('Failed to create post');
+      toast.error('Failed to publish post.');
     } finally {
       setIsPosting(false);
     }
@@ -346,6 +301,12 @@ export function DecodePage() {
                 {previewUrl ? (
                   <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
                     <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
+                    {isDecoding && (
+                      <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm flex flex-col items-center justify-center text-white gap-2">
+                        <Loader2 className="h-6 w-6 animate-spin" />
+                        <span className="text-sm font-medium">Analyzing image…</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <label className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center cursor-pointer hover:border-gray-400 transition-colors block">
@@ -401,12 +362,12 @@ export function DecodePage() {
               >
                 {isPosting ? (
                   <>
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                    <Loader2 className="h-5 w-5 animate-spin" />
                     Posting...
                   </>
                 ) : (
                   <>
-                    <Upload className="w-5 h-5" />
+                    <Send className="w-5 h-5" />
                     Post
                   </>
                 )}
@@ -414,12 +375,12 @@ export function DecodePage() {
             ) : (
               <button
                 onClick={handleDecode}
-                disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
+                disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding || !imageBase64}
                 className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isDecoding ? (
                   <>
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
+                    <Loader2 className="w-5 h-5 animate-spin" />
                     Decoding...
                   </>
                 ) : (
@@ -432,151 +393,150 @@ export function DecodePage() {
             )}
           </div>
 
-          {result && (
-            <div className="space-y-6">
-              {previewUrl && (
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                    Analysis Summary
-                  </h3>
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
-                      <img src={previewUrl} alt="Analyzed preview" className="w-full h-full object-cover" />
+          <div className="space-y-6">
+            {previewUrl && (
+              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
+                  Analysis Summary
+                </h3>
+                {isDecoding && !result ? (
+                  <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Generating insights…</span>
+                  </div>
+                ) : result ? (
+                  <div className="space-y-4 text-sm text-gray-700 dark:text-gray-300">
+                    <div>
+                      <span className="font-semibold">Primary subjects:</span>{' '}
+                      {result.subjects.length > 0 ? result.subjects.slice(0, 3).join(', ') : '—'}
                     </div>
-                    <div className="space-y-2 text-sm text-gray-700 dark:text-gray-300">
-                      <div>
-                        <span className="font-semibold">Model:</span>{' '}
-                        {MODEL_OPTIONS.find((option) => option.value === selectedModel)?.label || selectedModel}
-                      </div>
-                      <div>
-                        <span className="font-semibold">Style codes:</span> {result.styleCodes.length}
-                      </div>
-                      <div>
-                        <span className="font-semibold">Tags:</span> {result.tags.length}
-                      </div>
-                      <div>
-                        <span className="font-semibold">Subjects:</span> {result.subjects.length}
-                      </div>
-                      {result.story && (
-                        <div>
-                          <span className="font-semibold">Story snippet:</span>
-                          <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400">
-                            {result.story.length > 200 ? `${result.story.slice(0, 200)}…` : result.story}
-                          </p>
-                        </div>
-                      )}
+                    <div>
+                      <span className="font-semibold">Signature styles:</span>{' '}
+                      {result.styleCodes.length > 0 ? result.styleCodes.slice(0, 3).join(', ') : '—'}
+                    </div>
+                    <div>
+                      <span className="font-semibold">Prompt focus:</span>
+                      <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400">
+                        {result.story ? (result.story.length > 200 ? `${result.story.slice(0, 200)}…` : result.story) : '—'}
+                      </p>
                     </div>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <p className="text-sm text-gray-500">Upload an image and run a decode to see the analysis.</p>
+                )}
+              </div>
+            )}
 
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <div className="flex items-center gap-2 mb-4">
-                  <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
-                  <h3 className="text-sm font-semibold text-green-600 dark:text-green-400">
-                    Saved to your history
+            {result && (
+              <>
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center gap-2 mb-4">
+                    <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                    <h3 className="text-sm font-semibold text-green-600 dark:text-green-400">
+                      Saved to your history
+                    </h3>
+                  </div>
+                  <Link
+                    to="/me"
+                    className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white underline"
+                  >
+                    View all decodes →
+                  </Link>
+                </div>
+
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
+                    Style Codes
                   </h3>
-                </div>
-                <Link
-                  to="/me"
-                  className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white underline"
-                >
-                  View all decodes →
-                </Link>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                  Style Codes
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.styleCodes.map((code, i) => (
-                    <span
-                      key={i}
-                      className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-mono text-sm"
-                    >
-                      {code}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                  Tags
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.tags.map((tag, i) => (
-                    <span
-                      key={i}
-                      className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                  Subjects
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.subjects.map((subject, i) => (
-                    <span
-                      key={i}
-                      className="px-4 py-2 bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg"
-                    >
-                      {subject}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">
-                    Prompts
-                  </h3>
-                  <div className="flex gap-2">
-                    {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
-                      <button
-                        key={tab}
-                        onClick={() => setActivePromptTab(tab)}
-                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
-                          activePromptTab === tab
-                            ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
-                            : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
-                        }`}
+                  <div className="flex flex-wrap gap-2">
+                    {result.styleCodes.map((code, i) => (
+                      <span
+                        key={i}
+                        className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-mono text-sm"
                       >
-                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                      </button>
+                        {code}
+                      </span>
                     ))}
                   </div>
                 </div>
-                <div className="relative">
-                  <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
-                    {result[activePromptTab]}
-                  </p>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(result[activePromptTab]);
-                      setCopiedPrompt(activePromptTab);
-                      setTimeout(() => setCopiedPrompt(null), 2000);
-                    }}
-                    className="absolute top-0 right-0 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-                    title="Copy to clipboard"
-                  >
-                    {copiedPrompt === activePromptTab ? (
-                      <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
-                    ) : (
-                      <Copy className="w-5 h-5" />
-                    )}
-                  </button>
+
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
+                    Tags
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {result.tags.map((tag, i) => (
+                      <span
+                        key={i}
+                        className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
+                    Subjects
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {result.subjects.map((subject, i) => (
+                      <span
+                        key={i}
+                        className="px-4 py-2 bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg"
+                      >
+                        {subject}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">
+                      Prompts
+                    </h3>
+                    <div className="flex gap-2">
+                      {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          onClick={() => setActivePromptTab(tab)}
+                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
+                            activePromptTab === tab
+                              ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
+                              : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
+                          }`}
+                        >
+                          {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
+                      {result[activePromptTab]}
+                    </p>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(result[activePromptTab]);
+                        setCopiedPrompt(activePromptTab);
+                        setTimeout(() => setCopiedPrompt(null), 2000);
+                      }}
+                      className="absolute top-0 right-0 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                      title="Copy to clipboard"
+                    >
+                      {copiedPrompt === activePromptTab ? (
+                        <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                      ) : (
+                        <Copy className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
