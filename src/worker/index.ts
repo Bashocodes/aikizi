@@ -60,28 +60,6 @@ export default {
         response = await createPost(env, req, reqId);
       } else if (cleanPath === '/v1/balance' && method === 'POST') {
         response = json({ ok: false, error: 'method_not_allowed' }, 405);
-      } else if (cleanPath === '/v1/images/direct-upload' && method === 'POST') {
-        // TODO: remove after frontend purge
-        console.warn('[compat] legacy upload route hit', { path: cleanPath, reqId });
-        response = json(
-          {
-            ok: false,
-            error: 'legacy_route_removed',
-            hint: 'Send base64 to /v1/decode/<model> then POST /v1/posts/create',
-          },
-          410,
-        );
-      } else if (cleanPath === '/v1/images/ingest-complete' && method === 'POST') {
-        // TODO: remove after frontend purge
-        console.warn('[compat] legacy upload route hit', { path: cleanPath, reqId });
-        response = json(
-          {
-            ok: false,
-            error: 'legacy_route_removed',
-            hint: 'Send base64 to /v1/decode/<model> then POST /v1/posts/create',
-          },
-          410,
-        );
       } else if (cleanPath === '/v1/publish' && method === 'POST') {
         response = await publish(env, req);
       } else if (cleanPath === '/v1/sref/upload' && method === 'POST') {
