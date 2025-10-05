@@ -50,6 +50,13 @@ export async function directUpload(env: Env, req: Request, reqId?: string) {
 
   console.log(`${logPrefix} media asset created id=${mediaAsset.id} user=${user.id}`);
 
+  console.log(`${logPrefix} direct-upload issued`, {
+    userId: user.id,
+    mediaAssetId: mediaAsset.id,
+    cfImageId,
+    urlHost: new URL(uploadURL).host
+  });
+
   return json({
     uploadURL,
     mediaAssetId: mediaAsset.id,

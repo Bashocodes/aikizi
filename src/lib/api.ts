@@ -155,3 +155,55 @@ export const api = {
   delete: <T = any>(endpoint: string, options?: RequestInit) =>
     apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
 };
+
+/**
+ * Debug logging helper for upload flow
+ * Only logs when debugging upload issues
+ */
+export function logUploadDebug(...args: any[]) {
+  if (typeof window !== 'undefined') {
+    console.log('[UploadDebug]', ...args);
+  }
+}
+
+/**
+ * Fetch wrapper with debug logging for Cloudflare Images direct upload
+ * Logs timing, status, and errors without modifying the request
+ */
+export async function uploadWithDebug(req: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const t0 = performance.now();
+  const url = String(req);
+  const method = init?.method || 'POST';
+
+  logUploadDebug('fetch.start', {
+    url,
+    method,
+    hasBody: !!init?.body,
+    bodyType: init?.body?.constructor?.name || 'unknown'
+  });
+
+  try {
+    const res = await fetch(req, init);
+    const t1 = performance.now();
+
+    logUploadDebug('fetch.end', {
+      status: res.status,
+      ok: res.ok,
+      statusText: res.statusText,
+      dur_ms: Math.round(t1 - t0)
+    });
+
+    return res;
+  } catch (e: any) {
+    const t1 = performance.now();
+
+    logUploadDebug('fetch.error', {
+      dur_ms: Math.round(t1 - t0),
+      message: e?.message,
+      name: e?.name,
+      stack: e?.stack
+    });
+
+    throw e;
+  }
+}

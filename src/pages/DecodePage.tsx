@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { api } from '../lib/api';
+import { api, logUploadDebug, uploadWithDebug } from '../lib/api';
 import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
 
 interface DecodeResult {
@@ -36,6 +36,8 @@ export function DecodePage() {
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
+  const [lastUploadDebug, setLastUploadDebug] = useState<any>(null);
+  const [lastUploadInit, setLastUploadInit] = useState<RequestInit | null>(null);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -79,12 +81,44 @@ export function DecodePage() {
 
       const { uploadURL, mediaAssetId: assetId, cfImageId } = directUploadRes;
 
+      logUploadDebug('direct-upload.ok', {
+        mediaAssetId: assetId,
+        cfImageId,
+        uploadURLHost: new URL(uploadURL).host,
+        now_iso: new Date().toISOString()
+      });
+
       const formData = new FormData();
       formData.append('file', file);
 
-      const uploadRes = await fetch(uploadURL, {
+      logUploadDebug('browser.put.prepare', {
+        size: file.size,
+        type: file.type,
+        name: file.name,
+        methodUsed: 'POST'
+      });
+
+      const uploadInit: RequestInit = {
         method: 'POST',
         body: formData,
+      };
+
+      setLastUploadDebug({
+        uploadURL,
+        mediaAssetId: assetId,
+        cfImageId,
+        fileName: file.name,
+        size: file.size,
+        type: file.type,
+        startedAt: new Date().toISOString()
+      });
+      setLastUploadInit(uploadInit);
+
+      const uploadRes = await uploadWithDebug(uploadURL, uploadInit);
+
+      logUploadDebug('browser.put.result', {
+        status: uploadRes.status,
+        ok: uploadRes.ok
       });
 
       if (!uploadRes.ok) {
@@ -103,13 +137,45 @@ export function DecodePage() {
 
       setMediaAssetId(assetId);
       setUploadSuccess(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Upload error:', error);
+      logUploadDebug('browser.put.catch', {
+        message: error?.message,
+        stack: error?.stack
+      });
       alert('Failed to upload image. Please try again.');
     } finally {
       setIsUploading(false);
     }
   };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__aikizi = {
+        retryLastUpload: async () => {
+          if (!lastUploadDebug || !lastUploadInit) {
+            logUploadDebug('manual.retry.nodata');
+            console.warn('[UploadDebug] No upload data available for retry');
+            return;
+          }
+
+          logUploadDebug('manual.retry.begin', {
+            uploadURL: lastUploadDebug.uploadURL,
+            mediaAssetId: lastUploadDebug.mediaAssetId
+          });
+
+          try {
+            const res = await uploadWithDebug(lastUploadDebug.uploadURL, lastUploadInit);
+            logUploadDebug('manual.retry.result', { status: res.status, ok: res.ok });
+            alert(`Retry complete: ${res.ok ? 'Success' : 'Failed'} (${res.status})`);
+          } catch (e: any) {
+            logUploadDebug('manual.retry.error', { message: e?.message });
+            alert(`Retry error: ${e?.message}`);
+          }
+        }
+      };
+    }
+  }, [lastUploadDebug, lastUploadInit]);
 
   const handleDecode = async () => {
     if (!selectedFile || !mediaAssetId) {
@@ -466,6 +532,28 @@ export function DecodePage() {
           )}
         </div>
       </div>
+
+      {typeof window !== 'undefined' && localStorage.getItem('aikizi_debug') === '1' && lastUploadDebug && (
+        <div className="fixed bottom-4 right-4 bg-gray-900 text-white p-4 rounded-lg shadow-2xl max-w-sm border border-gray-700">
+          <div className="text-xs font-bold mb-2 text-yellow-400">Upload Debug Panel</div>
+          <div className="text-xs space-y-1 mb-3 font-mono">
+            <div>File: {lastUploadDebug.fileName}</div>
+            <div>Size: {Math.round(lastUploadDebug.size / 1024)} KB</div>
+            <div>Type: {lastUploadDebug.type}</div>
+            <div>Started: {new Date(lastUploadDebug.startedAt).toLocaleTimeString()}</div>
+            <div>Asset ID: {lastUploadDebug.mediaAssetId?.slice(0, 8)}...</div>
+          </div>
+          <button
+            onClick={() => (window as any).__aikizi?.retryLastUpload()}
+            className="w-full bg-yellow-600 hover:bg-yellow-700 text-white text-xs py-2 px-3 rounded transition-colors"
+          >
+            Retry Last Upload
+          </button>
+          <div className="text-xs text-gray-400 mt-2">
+            Console: [UploadDebug] logs
+          </div>
+        </div>
+      )}
     </div>
   );
 }
