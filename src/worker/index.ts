@@ -36,7 +36,7 @@ export default {
       } else if (pathname === '/v1/balance' && req.method==='GET') {
         response = allowOrigin(env, req, await balance(env, req, reqId));
       } else if (pathname === '/v1/spend' && req.method==='POST') {
-        response = allowOrigin(env, req, await spend(env, req));
+        response = allowOrigin(env, req, await spend(env, req, reqId));
       } else if (pathname === '/v1/images/direct-upload' && req.method==='POST') {
         response = allowOrigin(env, req, await directUpload(env));
       } else if (pathname === '/v1/images/ensure-variants' && req.method==='POST') {

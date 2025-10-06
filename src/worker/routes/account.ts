@@ -1,4 +1,4 @@
-import { supa } from '../lib/supa';
+import { supa, fromSafe } from '../lib/supa';
 import { json, bad } from '../lib/json';
 import { requireUser } from '../lib/auth';
 import { cors } from '../lib/cors';
@@ -20,18 +20,18 @@ export async function ensureAccount(env: Env, req: Request) {
   console.log('[FN ensure-account] User authenticated:', auth_id);
 
   const dbClient = supa(env, authResult.token);
-  const { data: existing } = await dbClient.from('users').select('id').eq('auth_id', auth_id).single();
+  const { data: existing } = await fromSafe(dbClient, 'users').select('id').eq('auth_id', auth_id).single();
   let user_id = existing?.id;
 
   if (!user_id) {
     console.log('[FN ensure-account] Creating new user:', auth_id);
-    const { data: inserted, error } = await dbClient.from('users').insert({ auth_id, role: 'viewer' }).select('id').single();
+    const { data: inserted, error } = await fromSafe(dbClient, 'users').insert({ auth_id, role: 'viewer' }).select('id').single();
     if (error) {
       console.error('[FN ensure-account] Failed to create user:', error.message);
       return bad('failed to ensure user');
     }
     user_id = inserted.id;
-    await dbClient.from('entitlements').insert({
+    await fromSafe(dbClient, 'entitlements').insert({
       user_id,
       monthly_quota: 1000,
       tokens_balance: 1000,
@@ -58,17 +58,40 @@ export async function balance(env: Env, req: Request, reqId?: string) {
     return cors(bad('auth required', 401));
   }
 
-  const dbClient = supa(env, authResult.token);
-  const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', authResult.user.id).single();
+  const sb = supa(env, authResult.token);
+  console.log(`${logPrefix} Fetching user record for auth_id=${authResult.user.id}`);
 
-  if (error || !data) {
+  const { data: userRecord, error: userError } = await fromSafe(sb, 'users')
+    .select('id')
+    .eq('auth_id', authResult.user.id)
+    .maybeSingle();
+
+  if (userError) {
+    console.error(`${logPrefix} User lookup error:`, userError.message);
+    return cors(bad('user_lookup_failed', 500));
+  }
+
+  if (!userRecord) {
     console.log(`${logPrefix} User not found: ${authResult.user.id}`);
     return cors(bad('not found', 404));
   }
 
-  const entitlements = data.entitlements as any;
-  const balance = Array.isArray(entitlements) ? entitlements[0]?.tokens_balance : entitlements?.tokens_balance;
+  const userId = userRecord.id;
+  console.log(`${logPrefix} User found, userId=${userId}, querying entitlements`);
 
-  console.log(`${logPrefix} Balance retrieved: ${balance || 0}`);
-  return cors(json({ ok: true, balance: balance || 0 }));
+  const { data: entitlement, error: entitlementError } = await fromSafe(sb, 'entitlements')
+    .select('tokens_balance')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (entitlementError) {
+    console.error(`${logPrefix} Entitlements query error:`, entitlementError.message);
+    console.log(`${logPrefix} Defaulting to balance: 0`);
+    return cors(json({ ok: true, balance: 0 }));
+  }
+
+  const balance = entitlement?.tokens_balance ?? 0;
+  console.log(`${logPrefix} RLS balance result`, { userId, balance, hasEntitlement: !!entitlement });
+  console.log(`${logPrefix} Balance retrieved: ${balance}`);
+  return cors(json({ ok: true, balance }));
 }
