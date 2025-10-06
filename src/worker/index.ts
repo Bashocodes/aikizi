@@ -1,88 +1,75 @@
 import type { Env } from './types';
-import { json } from './lib/json';
-import { handleOptions, withCors } from './lib/cors';
+import { json, bad } from './lib/json';
+import { preflight, allowOrigin } from './lib/cors';
 import { ensureAccount, balance } from './routes/account';
 import { spend } from './routes/wallet';
+import { directUpload, ensureVariants } from './routes/images';
 import { decode } from './routes/decode';
 import { publish } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
 import { search } from './routes/search';
-import { createPost } from './routes/posts';
 
 function generateReqId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
   return Math.random().toString(36).slice(2, 10);
-}
-
-function finalizeResponse(env: Env, req: Request, res: Response, reqId: string): Response {
-  const withCorsResponse = withCors(env, req, res);
-  const headers = new Headers(withCorsResponse.headers);
-  headers.set('x-req-id', reqId);
-  return new Response(withCorsResponse.body, { status: withCorsResponse.status, headers });
 }
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const reqId = generateReqId();
-    const url = new URL(req.url);
-    const method = req.method.toUpperCase();
-    const cleanPath = url.pathname.replace(/\/+$/, '') || '/';
-    const hasAuthHeader =
-      req.headers.has('authorization') || req.headers.has('Authorization');
+    const { pathname, searchParams } = new URL(req.url);
+    const hasAuthHeader = !!req.headers.get('authorization');
 
-    console.log(`[${reqId}] ${method} ${url.pathname} hasAuth=${hasAuthHeader}`);
+    console.log(`[${reqId}] ${req.method} ${pathname} hasAuth=${hasAuthHeader}`);
 
-    if (method === 'OPTIONS') {
-      console.log(`[${reqId}] OPTIONS preflight ${url.pathname}`);
-      const preflight = handleOptions(env, req);
-      const headers = new Headers(preflight.headers);
-      headers.set('x-req-id', reqId);
-      return new Response(preflight.body, { status: preflight.status, headers });
+    if (req.method === 'OPTIONS') {
+      console.log(`[${reqId}] OPTIONS preflight`);
+      return preflight(env, req);
     }
 
     try {
       let response: Response;
 
-      if (cleanPath === '/v1/health' && method === 'GET') {
-        response = json({ ok: true });
-      } else if (cleanPath === '/v1/ensure-account' && method === 'POST') {
-        response = await ensureAccount(env, req);
-      } else if (cleanPath === '/v1/balance' && method === 'GET') {
-        response = await balance(env, req, reqId);
-      } else if (cleanPath === '/v1/spend' && method === 'POST') {
-        response = await spend(env, req);
-      } else if (cleanPath.startsWith('/v1/decode/') && method === 'POST') {
-        const modelParam = cleanPath.replace('/v1/decode/', '');
-        response = await decode(env, req, modelParam, reqId);
-      } else if (cleanPath === '/v1/posts/create' && method === 'POST') {
-        response = await createPost(env, req, reqId);
-      } else if (cleanPath === '/v1/balance' && method === 'POST') {
-        response = json({ ok: false, error: 'method_not_allowed' }, 405);
-      } else if (cleanPath === '/v1/publish' && method === 'POST') {
-        response = await publish(env, req);
-      } else if (cleanPath === '/v1/sref/upload' && method === 'POST') {
-        response = await srefUpload(env, req);
-      } else if (cleanPath === '/v1/sref/unlock' && method === 'POST') {
-        response = await srefUnlock(env, req);
-      } else if (cleanPath === '/v1/search' && method === 'GET') {
-        response = await search(env, req);
-      } else if (cleanPath === '/v1/debug/auth' && method === 'GET') {
-        response = await debugAuth(env, req, reqId);
-      } else if (cleanPath === '/v1/debug/decode' && method === 'GET') {
-        response = await debugDecode(env, req, reqId);
+      if (pathname === '/v1/health') {
+        response = allowOrigin(env, req, json({ ok:true }));
+      } else if (pathname === '/v1/ensure-account' && req.method==='POST') {
+        response = allowOrigin(env, req, await ensureAccount(env, req));
+      } else if (pathname === '/v1/balance' && req.method==='GET') {
+        response = allowOrigin(env, req, await balance(env, req, reqId));
+      } else if (pathname === '/v1/spend' && req.method==='POST') {
+        response = allowOrigin(env, req, await spend(env, req));
+      } else if (pathname === '/v1/images/direct-upload' && req.method==='POST') {
+        response = allowOrigin(env, req, await directUpload(env));
+      } else if (pathname === '/v1/images/ensure-variants' && req.method==='POST') {
+        response = allowOrigin(env, req, await ensureVariants(env, req));
+      } else if (pathname === '/v1/decode' && req.method==='POST') {
+        response = allowOrigin(env, req, await decode(env, req, reqId));
+      } else if (pathname === '/v1/publish' && req.method==='POST') {
+        response = allowOrigin(env, req, await publish(env, req));
+      } else if (pathname === '/v1/sref/upload' && req.method==='POST') {
+        response = allowOrigin(env, req, await srefUpload(env, req));
+      } else if (pathname === '/v1/sref/unlock' && req.method==='POST') {
+        response = allowOrigin(env, req, await srefUnlock(env, req));
+      } else if (pathname === '/v1/search' && req.method==='GET') {
+        response = allowOrigin(env, req, await search(env, req));
+      } else if (pathname === '/v1/debug/auth' && req.method==='GET') {
+        response = allowOrigin(env, req, await debugAuth(env, req, reqId));
+      } else if (pathname === '/v1/debug/decode' && req.method==='GET') {
+        response = allowOrigin(env, req, await debugDecode(env, req, reqId));
       } else {
-        response = json({ ok: false, error: 'not_found', path: url.pathname, method }, 404);
+        response = allowOrigin(env, req, bad('not found', 404));
       }
 
-      const finalResponse = finalizeResponse(env, req, response, reqId);
-      console.log(`[${reqId}] Response: ${finalResponse.status}`);
-      return finalResponse;
+      const headers = new Headers(response.headers);
+      headers.set('x-req-id', reqId);
+      console.log(`[${reqId}] Response: ${response.status}`);
+      return new Response(response.body, { status: response.status, headers });
     } catch (e:any) {
       console.error(`[${reqId}] Unhandled error:`, e);
+      const headers = new Headers();
+      headers.set('x-req-id', reqId);
       const errorResponse = json({ ok:false, error: e?.message||'server error' }, 500);
-      return finalizeResponse(env, req, errorResponse, reqId);
+      const withHeaders = new Response(errorResponse.body, { status: errorResponse.status, headers });
+      return allowOrigin(env, req, withHeaders);
     }
   }
 }
@@ -127,14 +114,11 @@ async function debugAuth(env: Env, req: Request, reqId: string): Promise<Respons
   }
 
   const origin = req.headers.get('origin') || '';
-  const allowedOrigins = (env.CORS_ORIGIN || '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const originAllowed =
-    allowedOrigins.length === 0 ||
-    allowedOrigins.includes('*') ||
-    (origin ? allowedOrigins.includes(origin) : false);
+const allowedOrigins = (env.CORS_ORIGIN || "").split(",");
+if (!allowedOrigins.includes(request.headers.get("Origin") || "")) {
+  return new Response(JSON.stringify({ ok: false, error: "CORS not allowed" }), { status: 403 });
+}
+  const originAllowed = allowedOrigins.includes(origin);
 
   return json({
     ok: true,

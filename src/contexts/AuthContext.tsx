@@ -87,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
-      const response = await api.post('/v1/ensure-account');
+      const response = await api.post('/ensure-account');
 
       if (!response.ok) {
         console.warn('[Auth] ensure_account endpoint error:', { error: response.error, retryCount });
@@ -149,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { tokens_balance: 0, plan_name: 'free' };
       }
 
-      const response = await api.get('/v1/balance');
+      const response = await api.get('/balance');
 
       if (!response.ok) {
         console.warn('[Auth] get_balance endpoint error:', { error: response.error, retryCount });

@@ -1,28 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { createPost, decodeImage } from '../lib/api';
-import { toast } from '../lib/toast';
-import { Upload, Sparkles, AlertCircle, X, Copy, CheckCircle, Loader2, Send } from 'lucide-react';
-
-async function readFileAsBase64(file: File): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const base64 = result.includes(',') ? result.split(',')[1] : result;
-      if (!base64) {
-        reject(new Error('Invalid image data'));
-        return;
-      }
-      resolve(base64);
-    };
-    reader.onerror = () => {
-      reject(new Error('Failed to read file'));
-    };
-  });
-}
+import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
+import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X, Copy } from 'lucide-react';
 
 interface DecodeResult {
   styleCodes: string[];
@@ -34,6 +15,8 @@ interface DecodeResult {
   sound: string;
 }
 
+type DecodeStatus = 'idle' | 'decoding' | 'done' | 'error';
+
 const MODEL_OPTIONS = [
   { label: 'GPT-5 (default)', value: 'gpt-5' },
   { label: 'GPT-5 Mini', value: 'gpt-5-mini' },
@@ -42,218 +25,73 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { tokenBalance, refreshTokenBalance, user } = useAuth();
+  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>('gpt-5');
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [isDecoding, setIsDecoding] = useState(false);
-  const [isPosting, setIsPosting] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [result, setResult] = useState<DecodeResult | null>(null);
+  const [publishedPostId, setPublishedPostId] = useState<string | null>(null);
   const [insufficientTokens, setInsufficientTokens] = useState(false);
+  const [decodeStatus, setDecodeStatus] = useState<DecodeStatus>('idle');
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<{ type: string; message: string } | null>(null);
-  const activeRequestRef = useRef<number>(0);
+  const [spentTokens, setSpentTokens] = useState<number>(0);
+  const navigate = useNavigate();
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
 
   useEffect(() => {
-    const handleToast = (event: Event) => {
-      const customEvent = event as CustomEvent<{ type: string; message: string }>;
-      if (!customEvent.detail) return;
-      setToastMessage(customEvent.detail);
-      setTimeout(() => setToastMessage(null), 4000);
-    };
-    window.addEventListener('toast', handleToast);
-    return () => window.removeEventListener('toast', handleToast);
+    const saved = sessionStorage.getItem('aikizi:model');
+    if (saved && MODEL_OPTIONS.some(opt => opt.value === saved)) {
+      setSelectedModel(saved);
+    } else {
+      setSelectedModel('gpt-5');
+    }
   }, []);
 
   useEffect(() => {
+    if (selectedModel) {
+      sessionStorage.setItem('aikizi:model', selectedModel);
+    }
+  }, [selectedModel]);
+
+  useEffect(() => {
     return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
-  }, [previewUrl]);
+  }, []);
 
-  const processImage = async (
-    file: File,
-    base64: string,
-    requestId: number,
-    model: string,
-  ) => {
-    if (!user?.id) {
-      toast.error('You must be signed in to decode images.');
-      return;
-    }
-
-    if (requestId !== activeRequestRef.current) {
-      console.log('[decode] stale request aborted before start', { requestId, current: activeRequestRef.current });
-      return;
-    }
-
-    setInsufficientTokens(false);
-    setDecodeError(null);
-    setResult(null);
-    setIsDecoding(true);
-    setIsPosting(false);
-
-    try {
-      console.log('[decode] start', {
-        model,
-        size: file.size,
-        type: file.type,
-      });
-
-      const response = await decodeImage(model, base64, user.id, file.type || 'image/jpeg');
-
-      if (!response || typeof response !== 'object') {
-        throw new Error('Unexpected response from server');
-      }
-
-      const analysis = 'analysis' in response ? response.analysis : null;
-      if (!analysis || typeof analysis !== 'object') {
-        throw new Error('Missing analysis in response');
-      }
-
-      const analysisRecord = analysis as Record<string, unknown>;
-      const toStringArray = (value: unknown) =>
-        Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-      const toString = (value: unknown) => (typeof value === 'string' ? value : '');
-      const promptsRecord =
-        analysisRecord['prompts'] && typeof analysisRecord['prompts'] === 'object'
-          ? (analysisRecord['prompts'] as Record<string, unknown>)
-          : undefined;
-
-      const normalized: DecodeResult = {
-        styleCodes: toStringArray(analysisRecord['styleCodes']),
-        tags: toStringArray(analysisRecord['tags']),
-        subjects: toStringArray(analysisRecord['subjects']),
-        story: toString(analysisRecord['story']) || (promptsRecord ? toString(promptsRecord['story']) : ''),
-        mix: toString(analysisRecord['mix']) || (promptsRecord ? toString(promptsRecord['mix']) : ''),
-        expand: toString(analysisRecord['expand']) || (promptsRecord ? toString(promptsRecord['expand']) : ''),
-        sound: toString(analysisRecord['sound']) || (promptsRecord ? toString(promptsRecord['sound']) : ''),
-      };
-
-      if (requestId === activeRequestRef.current) {
-        setResult(normalized);
-        setIsDecoding(false);
-      } else {
-        console.log('[decode] skipping state update for stale request', {
-          requestId,
-          current: activeRequestRef.current,
-        });
-      }
-
-      console.log('[decode] done', { ok: true });
-
-      if (requestId !== activeRequestRef.current) {
-        console.log('[post] skipped due to newer request', { requestId, current: activeRequestRef.current });
-      } else {
-        setIsPosting(true);
-        try {
-          console.log('[post] create', { model });
-          const responsePost = await createPost({ model, image_base64: base64, analysis: normalized });
-          console.log('[post] ok', { postId: responsePost.postId });
-          toast.success('Post created successfully');
-        } catch (error) {
-          console.error('Post error:', error);
-          toast.error('Failed to publish post.');
-        } finally {
-          if (requestId === activeRequestRef.current) {
-            setIsPosting(false);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Decode error:', error);
-      const message = error instanceof Error ? error.message : 'Failed to decode image. Please try again.';
-      if (requestId === activeRequestRef.current) {
-        if (message.toLowerCase().includes('insufficient tokens')) {
-          setInsufficientTokens(true);
-        } else {
-          setDecodeError('Failed to decode image. Please try again.');
-        }
-        setIsDecoding(false);
-      }
-    } finally {
-      try {
-        await refreshTokenBalance();
-      } catch (balanceError) {
-        console.warn('Failed to refresh token balance', balanceError);
-      }
-    }
-  };
-
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-
-    const MAX_FILE_SIZE = 25 * 1024 * 1024;
-    const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
-
-    if (file.size > MAX_FILE_SIZE) {
-      toast.error('File size must be under 25MB');
-      e.target.value = '';
-      return;
-    }
-
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      toast.error('Only PNG, JPEG, and WebP images are supported');
-      e.target.value = '';
-      return;
-    }
-
-    if (!user?.id) {
-      toast.error('You must be signed in to decode images.');
-      e.target.value = '';
-      return;
-    }
-
-    if (tokenBalance < 1) {
-      setInsufficientTokens(true);
-      e.target.value = '';
-      return;
-    }
-
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
-
-    setSelectedFile(file);
-    const objectUrl = URL.createObjectURL(file);
-    setPreviewUrl(objectUrl);
-    setResult(null);
-    setDecodeError(null);
-    setImageBase64(null);
-    setInsufficientTokens(false);
-
-    const requestId = Date.now();
-    activeRequestRef.current = requestId;
-
-    try {
-      const base64 = await readFileAsBase64(file);
-      if (requestId !== activeRequestRef.current) {
+    if (file) {
+      if (file.size > 25 * 1024 * 1024) {
+        alert('File size must be under 25MB');
         return;
       }
-      setImageBase64(base64);
-      void processImage(file, base64, requestId, selectedModel);
-    } catch (error) {
-      console.error('File read error:', error);
-      toast.error('Failed to read file. Please try again.');
-    } finally {
-      e.target.value = '';
+      setSelectedFile(file);
+      setPreviewUrl(URL.createObjectURL(file));
+      setResult(null);
+      setDecodeError(null);
+      setDecodeStatus('idle');
+      setSpentTokens(0);
     }
   };
 
-  const handleReprocess = async () => {
-    if (!selectedFile || !imageBase64) {
-      toast.error('Upload an image before decoding.');
+
+  const handleDecode = async () => {
+    if (!selectedFile) {
+      alert('Please select an image');
       return;
     }
 
-    if (!user?.id) {
-      toast.error('You must be signed in to decode images.');
+    if (!selectedModel) {
+      alert('Please choose a model');
       return;
     }
 
@@ -262,45 +100,233 @@ export function DecodePage() {
       return;
     }
 
-    const requestId = Date.now();
-    activeRequestRef.current = requestId;
-    setDecodeError(null);
+    if (isDecoding) {
+      console.log('[DecodePage] Already decoding, ignoring double-click');
+      return;
+    }
+
+    if (abortControllerRef.current) {
+      console.log('[DecodePage] Aborting previous decode');
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    setIsDecoding(true);
     setInsufficientTokens(false);
-    void processImage(selectedFile, imageBase64, requestId, selectedModel);
+    setDecodeError(null);
+    setDecodeStatus('decoding');
+
+    console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        alert('Please sign in to decode images');
+        setIsDecoding(false);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.readAsDataURL(selectedFile);
+      const imageDataUrl = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+      });
+
+      const [mimePrefix, base64Data] = imageDataUrl.split(',');
+      const mimeType = mimePrefix.match(/:(.*?);/)?.[1] || 'image/jpeg';
+
+      abortControllerRef.current = new AbortController();
+
+      const response = await api.post('/decode',
+        {
+          base64: base64Data,
+          mimeType: mimeType,
+          model: selectedModel,
+        },
+        {
+          signal: abortControllerRef.current.signal,
+        }
+      );
+
+      abortControllerRef.current = null;
+
+      if (!response.success) {
+        console.error('[DecodePage] Decode failed', { error: response.error });
+
+        if (response.error?.includes('auth required')) {
+          setDecodeError('Authorization failed. Please sign out and back in.');
+        } else if (response.error?.includes('insufficient tokens')) {
+          setInsufficientTokens(true);
+        } else if (response.error?.includes('decode timeout')) {
+          setDecodeError('The model took too long. Please try again.');
+        } else if (response.error?.includes('invalid input')) {
+          setDecodeError('Invalid input. Please check your image and try again.');
+        } else {
+          setDecodeError(response.error || 'Failed to decode image. Please try again.');
+        }
+
+        setIsDecoding(false);
+        setDecodeStatus('error');
+        await refreshTokenBalance();
+        return;
+      }
+
+      if (response.result?.content) {
+        console.log('[DecodePage] Decode success');
+
+        try {
+          const cleaned = response.result.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+
+          const normalized = {
+            styleCodes: parsed.styleCodes || [],
+            tags: parsed.tags || [],
+            subjects: parsed.subjects || [],
+            story: parsed.prompts?.story || '',
+            mix: parsed.prompts?.mix || '',
+            expand: parsed.prompts?.expand || '',
+            sound: parsed.prompts?.sound || ''
+          };
+
+          setResult(normalized);
+        } catch (parseError) {
+          setResult({
+            styleCodes: [],
+            tags: [],
+            subjects: [],
+            story: response.result.content,
+            mix: '',
+            expand: '',
+            sound: ''
+          });
+        }
+
+        setSpentTokens(response.result.tokensUsed || 1);
+        setIsDecoding(false);
+        setDecodeStatus('done');
+        await refreshTokenBalance();
+      } else {
+        console.error('[DecodePage] Unexpected response format');
+        setDecodeError('Unexpected response from server. Please try again.');
+        setIsDecoding(false);
+        setDecodeStatus('error');
+        await refreshTokenBalance();
+      }
+    } catch (error: any) {
+      console.error('[DecodePage] Error in decode flow:', error);
+
+      if (error.name === 'AbortError') {
+        console.log('[DecodePage] Decode was aborted by user');
+      } else {
+        setDecodeError('Failed to decode image. Please try again.');
+      }
+
+      setIsDecoding(false);
+      setDecodeStatus('error');
+      await refreshTokenBalance();
+    }
+  };
+
+  const handlePublish = async () => {
+    if (!result || !selectedFile || !previewUrl) {
+      alert('No decode result to publish');
+      return;
+    }
+
+    setIsPublishing(true);
+
+    try {
+      const reader = new FileReader();
+      reader.readAsDataURL(selectedFile);
+
+      const imageBase64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+      });
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('Please sign in to publish posts');
+        return;
+      }
+
+      const title = result.styleCodes[0] || 'Decoded Style';
+      const slug = title
+        .toLowerCase()
+        .replace(/[•]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+        .slice(0, 50) + '-' + Date.now();
+
+      const response = await fetch('/.netlify/functions/publish-post', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          title,
+          slug,
+          image_base64: imageBase64,
+          style_triplet: result.styleCodes.join(' • '),
+          artist_oneword: result.subjects[0] || '',
+          style_tags: result.styleCodes,
+          subjects: result.subjects,
+          tags: result.tags,
+          prompt_short: result.story,
+          sref_code: result.styleCodes[0] || null,
+          sref_price: 1,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const errorMsg = data.details ? `${data.error}: ${data.details}` : data.error;
+        alert(errorMsg || 'Failed to publish post');
+        return;
+      }
+
+      setPublishedPostId(data.post_id);
+      alert('Post published successfully! View it on the Explore page.');
+    } catch (error) {
+      console.error('Error publishing post:', error);
+      alert('Failed to publish post. Please try again.');
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">
-            Decode an Image
-          </h1>
+          <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">Decode an Image</h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Upload an image to extract style codes, subjects, and prompts. Cost: 1 token per decode.
+            Upload an image to extract style codes, subjects, and tokens. Cost: 1 token per decode.
           </p>
           <div className="mt-4 flex items-center gap-4">
             <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg">
               <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
-              <span className="ml-2 font-bold text-gray-900 dark:text-white">
-                {tokenBalance} tokens
-              </span>
+              <span className="ml-2 font-bold text-gray-900 dark:text-white">{tokenBalance} tokens</span>
             </div>
           </div>
 
           {insufficientTokens && (
-            <div className="mt-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
+            <div className="mt-4 backdrop-blur-lg bg-red-50/90 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
-                <h3 className="font-semibold text-red-900 dark:text-red-100 mb-1">
-                  Insufficient Tokens
-                </h3>
+                <h3 className="font-semibold text-red-900 dark:text-red-100 mb-1">Insufficient Tokens</h3>
                 <p className="text-sm text-red-800 dark:text-red-200 mb-3">
-                  You need at least 1 token to decode an image.
+                  You need at least 1 token to decode an image. Please purchase more tokens to continue.
                 </p>
                 <Link
                   to="/pricing"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold transition-colors"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 text-white rounded-lg font-semibold transition-colors"
                 >
                   View Pricing Plans
                 </Link>
@@ -309,29 +335,19 @@ export function DecodePage() {
           )}
 
           {decodeError && (
-            <div className="mt-4 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4 flex items-start gap-3">
+            <div className="mt-4 backdrop-blur-lg bg-yellow-50/90 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 rounded-lg p-4 flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1 space-y-3">
-                <div>
-                  <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
-                    Decode Error
-                  </h3>
-                  <p className="text-sm text-yellow-800 dark:text-yellow-200">{decodeError}</p>
-                </div>
-                  <button
-                    onClick={() => {
-                      setDecodeError(null);
-                      void handleReprocess();
-                    }}
-                  className="inline-flex items-center gap-2 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-sm font-semibold transition-colors"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Retry decode
-                </button>
+              <div className="flex-1">
+                <h3 className="font-semibold text-yellow-900 dark:text-yellow-100 mb-1">
+                  Decode Error
+                </h3>
+                <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                  {decodeError}
+                </p>
               </div>
               <button
                 onClick={() => setDecodeError(null)}
-                className="text-yellow-600 dark:text-yellow-400 hover:text-yellow-700"
+                className="text-yellow-600 dark:text-yellow-400 hover:text-yellow-700 dark:hover:text-yellow-300"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -341,266 +357,245 @@ export function DecodePage() {
 
         <div className="grid lg:grid-cols-2 gap-8">
           <div className="space-y-6">
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
               <label className="block">
                 <div className="mb-4">
-                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                    Upload Image
-                  </span>
+                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Upload Image</span>
                 </div>
                 {previewUrl ? (
                   <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-800">
                     <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
-                    {isDecoding && (
-                      <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm flex flex-col items-center justify-center text-white gap-2">
-                        <Loader2 className="h-6 w-6 animate-spin" />
-                        <span className="text-sm font-medium">Analyzing image…</span>
-                      </div>
-                    )}
+                    <button
+                      onClick={() => {
+                        setSelectedFile(null);
+                        setPreviewUrl(null);
+                        setResult(null);
+                        setDecodeError(null);
+                        setDecodeStatus(null);
+                        setJobId(null);
+                        setConsecutive401s(0);
+                        stopPolling();
+                      }}
+                      className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-white rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      Change
+                    </button>
                   </div>
                 ) : (
-                  <label className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center cursor-pointer hover:border-gray-400 transition-colors block">
+                  <div className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center cursor-pointer hover:border-gray-400 dark:hover:border-gray-600 transition-colors">
                     <Upload className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                    <p className="text-gray-600 dark:text-gray-400 mb-2">
-                      Click to upload or drag and drop
-                    </p>
-                    <p className="text-sm text-gray-500">JPEG, PNG, WEBP up to 25MB</p>
+                    <p className="text-gray-600 dark:text-gray-400 mb-2">Click to upload or drag and drop</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-500">JPEG, PNG, WEBP up to 25MB</p>
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
                       onChange={handleFileSelect}
                       className="hidden"
                     />
-                  </label>
+                  </div>
+                )}
+                {!previewUrl && (
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
                 )}
               </label>
             </div>
 
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
               <label className="block">
-                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 block">
-                  Choose AI Model
-                </span>
+                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 block">Choose AI Model</span>
                 <div className="space-y-2">
                   {MODEL_OPTIONS.map((option) => (
                     <label
                       key={option.value}
-                      className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors"
+                      className="flex items-center gap-3 p-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors"
                     >
                       <input
                         type="radio"
                         name="model"
                         value={option.value}
                         checked={selectedModel === option.value}
-                        onChange={(e) => {
-                          setSelectedModel(e.target.value);
-                        }}
-                        className="w-4 h-4"
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className="w-4 h-4 text-gray-900 dark:text-white"
                       />
-                      <span className="text-gray-900 dark:text-white font-medium">
-                        {option.label}
-                      </span>
+                      <span className="text-gray-900 dark:text-white font-medium">{option.label}</span>
                     </label>
                   ))}
                 </div>
+                {!selectedModel && (
+                  <p className="mt-2 text-sm text-red-600 dark:text-red-400">Please choose a model</p>
+                )}
               </label>
             </div>
 
             <button
-              onClick={() => void handleReprocess()}
-              disabled={!selectedFile || !imageBase64 || isDecoding || isPosting}
-              className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              onClick={handleDecode}
+              disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
+              className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isDecoding ? (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Analyzing image…
-                </>
-              ) : isPosting ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Publishing post…
-                </>
-              ) : selectedFile ? (
-                <>
-                  <Send className="w-5 h-5" />
-                  Re-run decode & publish
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
+                  Decoding...
                 </>
               ) : (
                 <>
                   <Sparkles className="w-5 h-5" />
-                  Upload an image to start
+                  Decode (1 token)
                 </>
               )}
             </button>
-          </div>
 
-          <div className="space-y-6">
-            {previewUrl && (
-              <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                  Analysis Summary
-                </h3>
-                {isDecoding && !result ? (
-                  <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Generating insights…</span>
-                  </div>
-                ) : result ? (
-                  <div className="space-y-4 text-sm text-gray-700 dark:text-gray-300">
-                    <div>
-                      <span className="font-semibold">Primary subjects:</span>{' '}
-                      {result.subjects.length > 0 ? result.subjects.slice(0, 3).join(', ') : '—'}
-                    </div>
-                    <div>
-                      <span className="font-semibold">Signature styles:</span>{' '}
-                      {result.styleCodes.length > 0 ? result.styleCodes.slice(0, 3).join(', ') : '—'}
-                    </div>
-                    <div>
-                      <span className="font-semibold">Prompt focus:</span>
-                      <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-400">
-                        {result.story ? (result.story.length > 200 ? `${result.story.slice(0, 200)}…` : result.story) : '—'}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-500">Upload an image and run a decode to see the analysis.</p>
-                )}
+            {isDecoding && (
+              <div className="backdrop-blur-lg bg-gray-100/70 dark:bg-gray-800/70 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900 dark:border-white"></div>
+                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    Decoding...
+                  </span>
+                </div>
               </div>
             )}
+          </div>
 
-            {result && (
-              <>
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <div className="flex items-center gap-2 mb-4">
-                    <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
-                    <h3 className="text-sm font-semibold text-green-600 dark:text-green-400">
-                      Saved to your history
-                    </h3>
+          {result && (
+            <div className="space-y-6">
+              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Style Codes</h3>
+                <div className="flex flex-wrap gap-2">
+                  {result.styleCodes.map((code, i) => (
+                    <span key={i} className="px-4 py-2 bg-gradient-to-r from-gray-900 to-gray-800 dark:from-white dark:to-gray-100 text-white dark:text-gray-900 rounded-lg font-mono text-sm">
+                      {code}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Tags</h3>
+                <div className="flex flex-wrap gap-2">
+                  {result.tags.map((tag, i) => (
+                    <span key={i} className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Subjects</h3>
+                <div className="flex flex-wrap gap-2">
+                  {result.subjects.map((subject, i) => (
+                    <span key={i} className="px-4 py-2 bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg">
+                      {subject}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">Prompts</h3>
+                  <div className="flex gap-2">
+                    {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActivePromptTab(tab)}
+                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
+                          activePromptTab === tab
+                            ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
+                            : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      </button>
+                    ))}
                   </div>
-                  <Link
-                    to="/me"
-                    className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white underline"
+                </div>
+                <div className="relative">
+                  <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
+                    {result[activePromptTab]}
+                  </p>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(result[activePromptTab]);
+                      setCopiedPrompt(activePromptTab);
+                      setTimeout(() => setCopiedPrompt(null), 2000);
+                    }}
+                    className="absolute top-0 right-0 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                    title="Copy to clipboard"
                   >
-                    View all decodes →
-                  </Link>
+                    {copiedPrompt === activePromptTab ? (
+                      <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                    ) : (
+                      <Copy className="w-5 h-5" />
+                    )}
+                  </button>
                 </div>
+              </div>
 
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                    Style Codes
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {result.styleCodes.map((code, i) => (
-                      <span
-                        key={i}
-                        className="px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-mono text-sm"
-                      >
-                        {code}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                    Tags
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {result.tags.map((tag, i) => (
-                      <span
-                        key={i}
-                        className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">
-                    Subjects
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {result.subjects.map((subject, i) => (
-                      <span
-                        key={i}
-                        className="px-4 py-2 bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg"
-                      >
-                        {subject}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="bg-white dark:bg-gray-900 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">
-                      Prompts
-                    </h3>
-                    <div className="flex gap-2">
-                      {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
+              {isPublisher && (
+                <>
+                  {publishedPostId ? (
+                    <div className="space-y-4">
+                      <div className="backdrop-blur-lg bg-green-50/70 dark:bg-green-900/30 rounded-xl p-6 border border-green-200 dark:border-green-700 flex items-start gap-3">
+                        <CheckCircle className="w-6 h-6 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold text-green-900 dark:text-green-100 mb-1">Published Successfully!</p>
+                          <p className="text-sm text-green-800 dark:text-green-200">Your post is now live and visible on the Explore page.</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
                         <button
-                          key={tab}
-                          onClick={() => setActivePromptTab(tab)}
-                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
-                            activePromptTab === tab
-                              ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
-                              : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300'
-                          }`}
+                          onClick={() => navigate('/explore')}
+                          className="py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-semibold hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
                         >
-                          {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                          View on Explore
+                          <ExternalLink className="w-4 h-4" />
                         </button>
-                      ))}
+                        <button
+                          onClick={() => {
+                            setSelectedFile(null);
+                            setPreviewUrl(null);
+                            setResult(null);
+                            setPublishedPostId(null);
+                            setDecodeError(null);
+                            setDecodeStatus(null);
+                            setJobId(null);
+                            setConsecutive401s(0);
+                          }}
+                          className="py-3 bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        >
+                          Decode Another
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="relative">
-                    <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
-                      {result[activePromptTab]}
-                    </p>
+                  ) : (
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(result[activePromptTab]);
-                        setCopiedPrompt(activePromptTab);
-                        setTimeout(() => setCopiedPrompt(null), 2000);
-                      }}
-                      className="absolute top-0 right-0 p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-                      title="Copy to clipboard"
+                      onClick={handlePublish}
+                      disabled={isPublishing}
+                      className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
-                      {copiedPrompt === activePromptTab ? (
-                        <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                      {isPublishing ? (
+                        <>
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
+                          Publishing...
+                        </>
                       ) : (
-                        <Copy className="w-5 h-5" />
+                        'Post Publicly'
                       )}
                     </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
-
-      {toastMessage && (
-        <div className={`fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 max-w-md ${
-          toastMessage.type === 'error' ? 'bg-red-600 text-white' :
-          toastMessage.type === 'success' ? 'bg-green-600 text-white' :
-          'bg-blue-600 text-white'
-        }`}>
-          <div className="flex items-start gap-3">
-            <div className="flex-1">
-              <p className="font-medium">{toastMessage.message}</p>
-            </div>
-            <button
-              onClick={() => setToastMessage(null)}
-              className="text-white/80 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

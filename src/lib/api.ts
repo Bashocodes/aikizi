@@ -1,18 +1,22 @@
 import { supabase } from './supabase';
 
-// API base URL - always use https://aikizi.xyz for production
-const API_BASE = 'https://aikizi.xyz';
+// API base URL - always use https://aikizi.xyz/v1 for production
+const API_BASE = 'https://aikizi.xyz/v1';
 
 export interface ApiError {
   ok: false;
   error: string;
-  code?: string;
 }
 
-export type ApiResponse<T = unknown> = ApiError | T;
+export interface ApiSuccess {
+  ok: true;
+  [key: string]: any;
+}
+
+export type ApiResponse<T = any> = ApiSuccess | ApiError;
 
 let authReadyResolver: (() => void) | null = null;
-const authReadyPromise = new Promise<void>((resolve) => {
+let authReadyPromise = new Promise<void>((resolve) => {
   authReadyResolver = resolve;
 });
 
@@ -30,14 +34,11 @@ async function waitForAuth(): Promise<void> {
 /**
  * Make an authenticated API call to the Worker
  */
-export async function apiCall<T = unknown>(
+export async function apiCall<T = any>(
   endpoint: string,
   options: RequestInit = {},
   isRetry = false
 ): Promise<ApiResponse<T>> {
-  if (endpoint.startsWith('/v1/images/')) {
-    console.warn('[API] Attempted call to legacy upload route:', endpoint);
-  }
   try {
     await waitForAuth();
 
@@ -49,8 +50,8 @@ export async function apiCall<T = unknown>(
     }
 
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${session.access_token}`,
-      ...(options.headers as Record<string, string> | undefined),
+      'Authorization': `Bearer ${session.access_token}`,
+      ...(options.headers as Record<string, string>),
     };
 
     if (!(options.body instanceof FormData)) {
@@ -58,14 +59,14 @@ export async function apiCall<T = unknown>(
     }
 
     const url = `${API_BASE}${endpoint}`;
-    const timeout = endpoint.startsWith('/v1/decode') ? 60000 : 15000;
+    const timeout = endpoint === '/decode' ? 60000 : 15000;
 
     console.log('[API]', options.method || 'GET', url, { hasToken: true, timeout });
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    let response: Response;
+    let response;
     try {
       response = await fetch(url, {
         ...options,
@@ -74,20 +75,19 @@ export async function apiCall<T = unknown>(
         signal: options.signal || controller.signal,
       });
       clearTimeout(timeoutId);
-    } catch (fetchError: unknown) {
+    } catch (fetchError: any) {
       clearTimeout(timeoutId);
-      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+      if (fetchError.name === 'AbortError') {
         console.warn('[API] Request timeout:', endpoint);
         return { ok: false, error: 'Request timed out. Please try again.' };
       }
       throw fetchError;
     }
 
-    const data = (await response.json()) as unknown;
+    const data = await response.json();
 
     if (!response.ok) {
-      const errorPayload = data as { error?: string; code?: string } | undefined;
-      console.warn('[API] Error response:', { status: response.status, error: errorPayload?.error, code: errorPayload?.code });
+      console.warn('[API] Error response:', { status: response.status, error: data.error, code: data.code });
 
       if (response.status === 401 && !isRetry) {
         console.log('[API] 401 detected, attempting token refresh and retry...');
@@ -111,18 +111,14 @@ export async function apiCall<T = unknown>(
         return { ok: false, error: 'The model took too long. Please try again.' };
       }
 
-      return {
-        ok: false,
-        error: errorPayload?.error || `Request failed with status ${response.status}`,
-        code: errorPayload?.code,
-      };
+      return { ok: false, error: data.error || `Request failed with status ${response.status}`, code: data.code };
     }
 
     console.log('[API] Success:', data);
-    return data as T;
-  } catch (error: unknown) {
+    return data;
+  } catch (error: any) {
     console.error('[API] Unexpected error:', error);
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (error.name === 'AbortError') {
       return { ok: false, error: 'Request was canceled.' };
     }
     return { ok: false, error: error instanceof Error ? error.message : 'Network error' };
@@ -133,63 +129,29 @@ export async function apiCall<T = unknown>(
  * Convenience methods for common HTTP verbs
  */
 export const api = {
-  get: <T = unknown>(endpoint: string, options?: RequestInit) =>
+  get: <T = any>(endpoint: string, options?: RequestInit) =>
     apiCall<T>(endpoint, { ...options, method: 'GET' }),
 
-  post: <T = unknown>(endpoint: string, body?: unknown, options?: RequestInit) => {
+  post: <T = any>(endpoint: string, body?: any, options?: RequestInit) => {
     const { headers, ...restOptions } = options || {};
-    const headerRecord = headers as Record<string, string> | undefined;
     return apiCall<T>(endpoint, {
       ...restOptions,
       method: 'POST',
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : undefined,
       headers: {
         'Content-Type': 'application/json',
-        ...(headerRecord || {}),
+        ...(headers as Record<string, string> || {}),
       },
     });
   },
 
-  put: <T = unknown>(endpoint: string, body?: unknown, options?: RequestInit) =>
+  put: <T = any>(endpoint: string, body?: any, options?: RequestInit) =>
     apiCall<T>(endpoint, {
       ...options,
       method: 'PUT',
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : undefined,
     }),
 
-  delete: <T = unknown>(endpoint: string, options?: RequestInit) =>
+  delete: <T = any>(endpoint: string, options?: RequestInit) =>
     apiCall<T>(endpoint, { ...options, method: 'DELETE' }),
 };
-
-export type DecodeResponse = { success: boolean; analysis: any };
-export async function decodeImage(
-  model: string,
-  image_base64: string,
-  user_id?: string,
-  mime_type?: string,
-): Promise<DecodeResponse> {
-  const payload: Record<string, unknown> = { image_base64 };
-  if (user_id) {
-    payload.user_id = user_id;
-  }
-  if (mime_type) {
-    payload.mime_type = mime_type;
-  }
-
-  const res = await api.post(`/v1/decode/${encodeURIComponent(model)}`, payload);
-  if (!res || (typeof res === 'object' && 'ok' in res && res.ok === false)) {
-    const error = typeof res === 'object' && res && 'error' in res ? (res as ApiError).error : null;
-    throw new Error(error || 'Decode failed');
-  }
-  return res as DecodeResponse;
-}
-
-export type CreatePostResponse = { ok: true; postId: string };
-export async function createPost(payload: { model: string; image_base64: string; analysis: any }): Promise<CreatePostResponse> {
-  const res = await api.post('/v1/posts/create', payload);
-  if (!res || (typeof res === 'object' && 'ok' in res && res.ok === false)) {
-    const error = typeof res === 'object' && res && 'error' in res ? (res as ApiError).error : null;
-    throw new Error(error || 'Post failed');
-  }
-  return res as CreatePostResponse;
-}

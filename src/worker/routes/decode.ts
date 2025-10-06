@@ -5,33 +5,22 @@ import { requireUser } from '../lib/auth';
 import { callGeminiREST } from '../providers/gemini-rest';
 import type { Env } from '../types';
 
-interface DecodeBody {
-  image_base64?: string;
+type Body = {
+  base64?: string;
+  mimeType?: string;
+  imageUrl?: string;
   model?: string;
-  mime_type?: string;
-  user_id?: string;
-}
-
-interface AnalysisPayload {
-  styleCodes: string[];
-  tags: string[];
-  subjects: string[];
-  story: string;
-  mix: string;
-  expand: string;
-  sound: string;
-}
+};
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
-const DEFAULT_MODEL = 'gemini-2.5-flash';
-const GEMINI_MODEL_MAP: Record<string, string> = {
-  'gemini-2.5-flash': 'gemini-2.0-flash-exp',
-  'gemini-2.5-pro': 'gemini-2.0-pro-exp',
-};
 const DECODE_TIMEOUT_MS = 50000;
 
-export async function decode(env: Env, req: Request, modelParam: string, reqId?: string) {
+export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
+
+  if (req.method === 'OPTIONS') {
+    return cors(new Response(null, { status: 200 }));
+  }
 
   let user;
   try {
@@ -46,11 +35,7 @@ export async function decode(env: Env, req: Request, modelParam: string, reqId?:
   }
 
   const dbClient = supa(env);
-  const { data: userData } = await dbClient
-    .from('users')
-    .select('id')
-    .eq('auth_id', user.id)
-    .single();
+  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
 
   if (!userData) {
     console.log(`${logPrefix} User not found in DB`);
@@ -80,97 +65,44 @@ export async function decode(env: Env, req: Request, modelParam: string, reqId?:
 
   console.log(`${logPrefix} Spent 1 token`);
 
-  let body: DecodeBody;
+  let body: Body;
   try {
-    body = (await req.json()) as DecodeBody;
-  } catch (error) {
+    body = await req.json() as Body;
+  } catch (e) {
     console.log(`${logPrefix} Invalid JSON`);
     await refundToken(dbClient, userData.id, logPrefix);
     return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  if (body.user_id && body.user_id !== user.id) {
-    console.warn(`${logPrefix} user_id mismatch body=${body.user_id} auth=${user.id}`);
-  }
+  const hasBase64 = body?.base64 && body?.mimeType;
+  const hasImageUrl = body?.imageUrl;
 
-  const rawBase64 = typeof body.image_base64 === 'string' ? body.image_base64.trim() : '';
-  if (!rawBase64) {
-    console.log(`${logPrefix} Missing image_base64`);
+  if (!hasBase64 && !hasImageUrl) {
+    console.log(`${logPrefix} Missing image data`);
     await refundToken(dbClient, userData.id, logPrefix);
     return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  const sanitizedBase64 = rawBase64.replace(/\s+/g, '');
+  const defaultModel = 'gemini-2.5-flash';
+  const model = body.model || defaultModel;
 
-  const requestedModel = (modelParam || body.model || DEFAULT_MODEL).toLowerCase();
-  if (!ALLOWED_MODELS.includes(requestedModel)) {
-    console.log(`${logPrefix} Invalid model: ${requestedModel}`);
+  if (!ALLOWED_MODELS.includes(model)) {
+    console.log(`${logPrefix} Invalid model: ${model}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid model' }, 422));
+    return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  const mimeType = typeof body.mime_type === 'string' && body.mime_type
-    ? body.mime_type
-    : 'image/jpeg';
+  console.log(`${logPrefix} Starting decode model=${model}`);
 
-  console.log(`${logPrefix} Starting decode model=${requestedModel}`);
   const startTime = Date.now();
-  let analysisText = '';
+  let text: string;
 
   try {
-    analysisText = await analyzeWithModel(env, requestedModel, sanitizedBase64, mimeType, logPrefix);
-  } catch (error) {
-    const ms = Date.now() - startTime;
-    if (error instanceof Error && error.message === 'DECODE_TIMEOUT') {
-      console.warn(`${logPrefix} Timeout ms=${ms}`);
-      await refundToken(dbClient, userData.id, logPrefix);
-      return cors(json({ success: false, error: 'decode timeout' }, 504));
-    }
-    console.error(`${logPrefix} Provider error ms=${ms}`, error);
-    await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'internal error' }, 500));
-  }
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
 
-  const latencyMs = Date.now() - startTime;
-  console.log(`${logPrefix} Success ms=${latencyMs}`);
-
-  const analysis = normalizeAnalysis(analysisText);
-
-  const { data: decodeRecord, error: insertError } = await dbClient
-    .from('decodes')
-    .insert({
-      user_id: userData.id,
-      model: requestedModel,
-      raw_json: { text: analysisText },
-      normalized_json: analysis,
-      cost_tokens: 1,
-      private: true,
-    })
-    .select('id')
-    .single();
-
-  if (insertError) {
-    console.error(`${logPrefix} Failed to save decode:`, insertError);
-  }
-
-  return cors(json({
-    success: true,
-    analysis,
-    decodeId: decodeRecord?.id ?? null,
-    tokensUsed: 1,
-  }));
-}
-
-async function analyzeWithModel(
-  env: Env,
-  model: string,
-  base64: string,
-  mimeType: string,
-  logPrefix: string,
-): Promise<string> {
-  if (model.startsWith('gemini')) {
-    const providerModel = GEMINI_MODEL_MAP[model] || GEMINI_MODEL_MAP[DEFAULT_MODEL];
-    const prompt = `Analyze this image and return a JSON object with the following structure:
+    try {
+      const prompt = `Analyze this image and return a JSON object with the following structure:
 {
   "styleCodes": ["--sref 123456789", "--profile abc", "--moodboard xyz"],
   "tags": ["minimalist", "modern", "clean", "geometric"],
@@ -191,97 +123,60 @@ Focus on:
 
 Return ONLY valid JSON, no markdown formatting.`;
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
+      const result = await Promise.race([
+        callGeminiREST(env, {
+          base64: body.base64,
+          mimeType: body.mimeType,
+          imageUrl: body.imageUrl,
+          model: model === 'gemini-2.5-flash' ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp',
+          prompt
+        }, abortController.signal),
+        new Promise<never>((_, reject) => {
+          abortController.signal.addEventListener('abort', () => {
+            reject(new Error('DECODE_TIMEOUT'));
+          });
+        })
+      ]);
 
-    try {
-      const result = await callGeminiREST(
-        env,
-        {
-          base64,
-          mimeType,
-          model: providerModel,
-          prompt,
-        },
-        abortController.signal,
-      );
+      text = result.text;
       clearTimeout(timeoutId);
-      return result.text;
-    } catch (error) {
+    } catch (error: any) {
       clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('DECODE_TIMEOUT');
+      if (error.message === 'DECODE_TIMEOUT') {
+        const ms = Date.now() - startTime;
+        console.log(`${logPrefix} Timeout ms=${ms}`);
+        await refundToken(dbClient, userData.id, logPrefix);
+        return cors(json({ success: false, error: 'decode timeout' }, 504));
       }
       throw error;
     }
+  } catch (error: any) {
+    const ms = Date.now() - startTime;
+    console.error(`${logPrefix} Provider error ms=${ms}`);
+    await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ success: false, error: 'internal error' }, 500));
   }
 
-  console.log(`${logPrefix} Using mock analysis for model=${model}`);
-  return JSON.stringify({
-    styleCodes: [`--sref mock-${model}`, '--profile studio-alpha'],
-    tags: ['concept art', 'mock analysis', 'stylized'],
-    subjects: ['future city', 'dramatic lighting'],
-    story: `Mock analysis generated for ${model}.`,
-    mix: `/imagine prompt: futuristic skyline :: model ${model}`,
-    expand: `Detailed regeneration prompt for ${model}.`,
-    sound: `Immersive ambient soundtrack inspired by ${model}.`,
+  const ms = Date.now() - startTime;
+  console.log(`${logPrefix} Success ms=${ms}`);
+
+  await dbClient.from('decodes').insert({
+    user_id: userData.id,
+    input_media_id: null,
+    model: model,
+    raw_json: { text },
+    normalized_json: { content: text },
+    cost_tokens: 1,
+    private: true
   });
-}
 
-function normalizeAnalysis(payload: unknown): AnalysisPayload {
-  const base: AnalysisPayload = {
-    styleCodes: [],
-    tags: [],
-    subjects: [],
-    story: '',
-    mix: '',
-    expand: '',
-    sound: '',
-  };
-
-  if (!payload) {
-    return base;
-  }
-
-  if (typeof payload === 'string') {
-    const cleaned = payload.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-    try {
-      const parsed = JSON.parse(cleaned);
-      return normalizeAnalysis(parsed);
-    } catch {
-      return { ...base, story: cleaned };
+  return cors(json({
+    success: true,
+    result: {
+      content: text,
+      tokensUsed: 1
     }
-  }
-
-  const record = payload as Record<string, unknown>;
-  const prompts =
-    record['prompts'] && typeof record['prompts'] === 'object'
-      ? (record['prompts'] as Record<string, unknown>)
-      : undefined;
-
-  const toStringArray = (value: unknown): string[] =>
-    Array.isArray(value)
-      ? value.filter((entry): entry is string => typeof entry === 'string')
-      : [];
-
-  const toString = (value: unknown): string => (typeof value === 'string' ? value : '');
-
-  const story = toString(record['story']) || (prompts ? toString(prompts['story']) : '');
-  const mix = toString(record['mix']) || (prompts ? toString(prompts['mix']) : '');
-  const expand = toString(record['expand']) || (prompts ? toString(prompts['expand']) : '');
-  const sound = toString(record['sound']) || (prompts ? toString(prompts['sound']) : '');
-
-  const styleCodesRaw = record['styleCodes'] ?? record['style_codes'];
-
-  return {
-    styleCodes: toStringArray(styleCodesRaw),
-    tags: toStringArray(record['tags']),
-    subjects: toStringArray(record['subjects']),
-    story,
-    mix,
-    expand,
-    sound,
-  };
+  }));
 }
 
 async function refundToken(dbClient: any, userId: string, logPrefix: string): Promise<void> {
@@ -299,7 +194,7 @@ async function refundToken(dbClient: any, userId: string, logPrefix: string): Pr
         .eq('user_id', userId);
       console.log(`${logPrefix} Refunded 1 token`);
     }
-  } catch (error) {
-    console.error(`${logPrefix} Refund error`, error);
+  } catch (e) {
+    console.error(`${logPrefix} Refund error`);
   }
 }

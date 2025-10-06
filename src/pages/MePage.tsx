@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { User, Coins, LogOut, History, CreditCard, Save, Loader2, AlertCircle, ArrowUpCircle, ArrowDownCircle, Gift, Calendar, RefreshCw, Image as ImageIcon } from 'lucide-react';
+import { User, Coins, LogOut, History, CreditCard, Save, Loader2, AlertCircle, ArrowUpCircle, ArrowDownCircle, Gift, Calendar, RefreshCw } from 'lucide-react';
 
 interface ProfileData {
   user_id: string;
@@ -22,17 +22,6 @@ interface Transaction {
   created_at: string;
 }
 
-interface Decode {
-  id: string;
-  created_at: string;
-  model: string;
-  normalized_json: any;
-  input_media_id: string | null;
-  media_asset?: {
-    cf_image_id: string;
-  };
-}
-
 export function MePage() {
   const { user, userRecord, tokenBalance, planName, signOut, refreshTokenBalance, authReady } = useAuth();
   const navigate = useNavigate();
@@ -49,14 +38,11 @@ export function MePage() {
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [nextResetAt, setNextResetAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [decodes, setDecodes] = useState<Decode[]>([]);
-  const [loadingDecodes, setLoadingDecodes] = useState(false);
 
   useEffect(() => {
     if (authReady && userRecord) {
       loadProfile();
       loadAllTokenData();
-      loadDecodes();
     }
   }, [authReady, userRecord]);
 
@@ -210,43 +196,9 @@ export function MePage() {
     }
   };
 
-  const loadDecodes = async () => {
-    if (!userRecord) return;
-
-    setLoadingDecodes(true);
-    try {
-      const { data, error } = await supabase
-        .from('decodes')
-        .select(`
-          id,
-          created_at,
-          model,
-          normalized_json,
-          input_media_id,
-          media_assets (
-            cf_image_id
-          )
-        `)
-        .eq('user_id', userRecord.id)
-        .eq('private', true)
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      if (error) {
-        console.error('Error loading decodes:', error);
-      } else {
-        setDecodes(data || []);
-      }
-    } catch (err) {
-      console.error('Unexpected error loading decodes:', err);
-    } finally {
-      setLoadingDecodes(false);
-    }
-  };
-
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await Promise.all([loadAllTokenData(), loadDecodes()]);
+    await loadAllTokenData();
     setIsRefreshing(false);
   };
 
@@ -514,66 +466,6 @@ export function MePage() {
                     </div>
                   </div>
                 ))}
-              </div>
-            )}
-          </div>
-
-          <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Recent Decodes</h2>
-
-            {loadingDecodes ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 text-gray-900 dark:text-white animate-spin" />
-              </div>
-            ) : decodes.length === 0 ? (
-              <div className="text-center py-8">
-                <ImageIcon className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-600 dark:text-gray-400 mb-2">No decodes yet</p>
-                <p className="text-sm text-gray-500 dark:text-gray-500 mb-4">Upload an image to get started</p>
-                <Link
-                  to="/decode"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-semibold hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors"
-                >
-                  Decode an Image
-                </Link>
-              </div>
-            ) : (
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {decodes.map((decode) => {
-                  const variants = decode.media_asset?.variants as any;
-                  const base64 = typeof variants?.original === 'string' ? variants.original : null;
-                  const imageUrl = base64 ? `data:image/jpeg;base64,${base64}` : null;
-
-                  return (
-                    <div
-                      key={decode.id}
-                      className="bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden group cursor-pointer hover:ring-2 hover:ring-gray-900 dark:hover:ring-white transition-all"
-                    >
-                      {imageUrl ? (
-                        <div className="aspect-square bg-gray-200 dark:bg-gray-700 relative">
-                          <img
-                            src={imageUrl}
-                            alt="Decoded"
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                          />
-                        </div>
-                      ) : (
-                        <div className="aspect-square bg-gray-300 dark:bg-gray-700 flex items-center justify-center">
-                          <ImageIcon className="w-12 h-12 text-gray-400" />
-                        </div>
-                      )}
-                      <div className="p-3">
-                        <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
-                          {decode.model}
-                        </p>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                          {formatDate(decode.created_at)}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
               </div>
             )}
           </div>
