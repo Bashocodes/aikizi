@@ -25,20 +25,47 @@ export async function ensureAccount(env: Env, req: Request) {
 
   if (!user_id) {
     console.log('[FN ensure-account] Creating new user:', auth_id);
-    const { data: inserted, error } = await fromSafe(dbClient, 'users').insert({ auth_id, role: 'viewer' }).select('id').single();
-    if (error) {
-      console.error('[FN ensure-account] Failed to create user:', error.message);
-      return bad('failed to ensure user');
+    const { data: inserted, error: insertUserError } = await fromSafe(dbClient, 'users').insert({ auth_id, role: 'viewer' }).select('id').single();
+    if (insertUserError) {
+      console.error('[FN ensure-account] Failed to create user:', insertUserError.message);
+      return cors(bad('failed to ensure user', 500));
     }
     user_id = inserted.id;
-    await fromSafe(dbClient, 'entitlements').insert({
+    console.log('[FN ensure-account] User created, id:', user_id);
+
+    const freePlanResult = await fromSafe(dbClient, 'plans').select('id').eq('name', 'free').single();
+    const freePlanId = freePlanResult.data?.id;
+
+    if (!freePlanId) {
+      console.error('[FN ensure-account] Free plan not found');
+      return cors(bad('free plan not found', 500));
+    }
+
+    const { error: entitlementError } = await fromSafe(dbClient, 'entitlements').insert({
       user_id,
-      monthly_quota: 1000,
-      tokens_balance: 1000,
-      last_reset_at: new Date().toISOString(),
-      next_reset_at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString()
+      plan_id: freePlanId,
+      tokens_balance: 1000
     });
-    console.log('[FN ensure-account] User created with entitlements:', user_id);
+
+    if (entitlementError) {
+      console.error('[FN ensure-account] Failed to create entitlements:', entitlementError.message);
+      return cors(bad('failed to create entitlements', 500));
+    }
+
+    const { error: transactionError } = await fromSafe(dbClient, 'transactions').insert({
+      user_id,
+      kind: 'welcome_grant',
+      amount: 1000,
+      ref: { reason: 'signup', plan: 'free' }
+    });
+
+    if (transactionError) {
+      console.warn('[FN ensure-account] Failed to log welcome transaction:', transactionError.message);
+    }
+
+    console.log('[FN ensure-account] User created with entitlements: user_id=' + user_id + ' balance=1000');
+  } else {
+    console.log('[FN ensure-account] User already exists:', user_id);
   }
 
   return json({ ok: true, user_id });
