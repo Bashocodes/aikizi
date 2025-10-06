@@ -5,10 +5,9 @@ import { cors } from '../lib/cors';
 import type { Env } from '../types';
 
 export async function ensureAccount(env: Env, req: Request) {
-  let user;
+  let authResult;
   try {
-    const authResult = await requireUser(env, req);
-    user = authResult.user;
+    authResult = await requireUser(env, req);
   } catch (error) {
     if (error instanceof Response) {
       return cors(error);
@@ -17,10 +16,10 @@ export async function ensureAccount(env: Env, req: Request) {
     return cors(bad('auth required', 401));
   }
 
-  const auth_id = user.id;
+  const auth_id = authResult.user.id;
   console.log('[FN ensure-account] User authenticated:', auth_id);
 
-  const dbClient = supa(env);
+  const dbClient = supa(env, authResult.token);
   const { data: existing } = await dbClient.from('users').select('id').eq('auth_id', auth_id).single();
   let user_id = existing?.id;
 
@@ -48,10 +47,9 @@ export async function ensureAccount(env: Env, req: Request) {
 export async function balance(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [balance]` : '[balance]';
 
-  let user;
+  let authResult;
   try {
-    const authResult = await requireUser(env, req, reqId);
-    user = authResult.user;
+    authResult = await requireUser(env, req, reqId);
   } catch (error) {
     if (error instanceof Response) {
       return cors(error);
@@ -60,11 +58,11 @@ export async function balance(env: Env, req: Request, reqId?: string) {
     return cors(bad('auth required', 401));
   }
 
-  const dbClient = supa(env);
-  const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', user.id).single();
+  const dbClient = supa(env, authResult.token);
+  const { data, error } = await dbClient.from('users').select('id, entitlements(tokens_balance)').eq('auth_id', authResult.user.id).single();
 
   if (error || !data) {
-    console.log(`${logPrefix} User not found: ${user.id}`);
+    console.log(`${logPrefix} User not found: ${authResult.user.id}`);
     return cors(bad('not found', 404));
   }
 

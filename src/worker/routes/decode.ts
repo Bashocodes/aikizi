@@ -22,10 +22,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     return cors(new Response(null, { status: 200 }));
   }
 
-  let user;
+  let authResult;
   try {
-    const authResult = await requireUser(env, req, reqId);
-    user = authResult.user;
+    authResult = await requireUser(env, req, reqId);
     console.log(`${logPrefix} User authenticated`);
   } catch (error) {
     if (error instanceof Response) {
@@ -34,8 +33,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     return cors(json({ success: false, error: 'auth required' }, 401));
   }
 
-  const dbClient = supa(env);
-  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', user.id).single();
+  const dbClient = supa(env, authResult.token);
+  const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', authResult.user.id).single();
 
   if (!userData) {
     console.log(`${logPrefix} User not found in DB`);
