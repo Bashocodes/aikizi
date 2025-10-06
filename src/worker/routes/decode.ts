@@ -1,17 +1,23 @@
-import { json, bad } from '../lib/json';
+import { json } from '../lib/json';
 import { supa } from '../lib/supa';
 import { cors } from '../lib/cors';
 import { requireUser } from '../lib/auth';
-import { callAIProvider } from '../lib/ai-providers';
+import { callGeminiREST } from '../providers/gemini-rest';
 import type { Env } from '../types';
 
-type Body = { imageUrl: string; model?: string };
+type Body = {
+  base64?: string;
+  mimeType?: string;
+  imageUrl?: string;
+  model?: string;
+};
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 const DECODE_TIMEOUT_MS = 50000;
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
+
   if (req.method === 'OPTIONS') {
     return cors(new Response(null, { status: 200 }));
   }
@@ -20,14 +26,12 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   try {
     const authResult = await requireUser(env, req, reqId);
     user = authResult.user;
-    console.log(`${logPrefix} User authenticated: ${user.id}`);
+    console.log(`${logPrefix} User authenticated`);
   } catch (error) {
     if (error instanceof Response) {
-      console.log(`${logPrefix} Auth failed`);
       return cors(error);
     }
-    console.error(`${logPrefix} Unexpected auth error:`, error);
-    return cors(bad('auth required', 401));
+    return cors(json({ success: false, error: 'auth required' }, 401));
   }
 
   const dbClient = supa(env);
@@ -35,7 +39,7 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   if (!userData) {
     console.log(`${logPrefix} User not found in DB`);
-    return cors(json({ ok: false, error: 'auth required' }, 401));
+    return cors(json({ success: false, error: 'auth required' }, 401));
   }
 
   const { data: entitlementData } = await dbClient
@@ -45,8 +49,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     .single();
 
   if (!entitlementData || entitlementData.tokens_balance < 1) {
-    console.log(`${logPrefix} Insufficient tokens balance=${entitlementData?.tokens_balance || 0}`);
-    return cors(json({ ok: false, error: 'insufficient tokens' }, 402));
+    console.log(`${logPrefix} Insufficient tokens`);
+    return cors(json({ success: false, error: 'insufficient tokens' }, 402));
   }
 
   const { error: spendError } = await dbClient
@@ -55,103 +59,122 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     .eq('user_id', userData.id);
 
   if (spendError) {
-    console.error(`${logPrefix} Failed to spend token: ${spendError.message}`);
-    return cors(json({ ok: false, error: 'internal error' }, 500));
+    console.error(`${logPrefix} Failed to spend token`);
+    return cors(json({ success: false, error: 'internal error' }, 500));
   }
 
-  console.log(`${logPrefix} Spent 1 token, new balance=${entitlementData.tokens_balance - 1}`);
+  console.log(`${logPrefix} Spent 1 token`);
 
   let body: Body;
   try {
     body = await req.json() as Body;
   } catch (e) {
-    console.log(`${logPrefix} Failed to parse body:`, e);
+    console.log(`${logPrefix} Invalid JSON`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ ok: false, error: 'invalid input' }, 422));
+    return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  const imageUrl = body?.imageUrl;
-  if (!imageUrl) {
-    console.log(`${logPrefix} Missing imageUrl`);
+  const hasBase64 = body?.base64 && body?.mimeType;
+  const hasImageUrl = body?.imageUrl;
+
+  if (!hasBase64 && !hasImageUrl) {
+    console.log(`${logPrefix} Missing image data`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ ok: false, error: 'invalid input' }, 422));
+    return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  const defaultModel = (env.AI_PROVIDER === 'openai') ? 'gpt-5-mini' : 'gemini-2.5-flash';
+  const defaultModel = 'gemini-2.5-flash';
   const model = body.model || defaultModel;
+
   if (!ALLOWED_MODELS.includes(model)) {
     console.log(`${logPrefix} Invalid model: ${model}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ ok: false, error: 'invalid input' }, 422));
+    return cors(json({ success: false, error: 'invalid input' }, 422));
   }
 
-  const aiProvider = model.startsWith('gpt-') ? 'openai' : 'gemini';
-  console.log(`${logPrefix} Starting decode model=${model} provider=${aiProvider}`);
+  console.log(`${logPrefix} Starting decode model=${model}`);
 
   const startTime = Date.now();
-  let result;
+  let text: string;
 
   try {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
 
     try {
-      result = await Promise.race([
-        callAIProvider(imageUrl, model, env),
-        new Promise((_, reject) => {
+      const prompt = `Analyze this image and return a JSON object with the following structure:
+{
+  "styleCodes": ["--sref 123456789", "--profile abc", "--moodboard xyz"],
+  "tags": ["minimalist", "modern", "clean", "geometric"],
+  "subjects": ["abstract shapes", "architecture", "composition"],
+  "prompts": {
+    "story": "A narrative prompt describing the image's story",
+    "mix": "A Midjourney prompt mixing styles: /imagine prompt: ...",
+    "expand": "An expanded detailed prompt for regeneration",
+    "sound": "A sound design prompt describing the audio atmosphere"
+  }
+}
+
+Focus on:
+- Style codes: Midjourney style references (--sref), profiles, moodboards
+- Tags: Style descriptors, techniques, mood
+- Subjects: Main visual elements
+- Prompts: Creative variations for different use cases
+
+Return ONLY valid JSON, no markdown formatting.`;
+
+      const result = await Promise.race([
+        callGeminiREST(env, {
+          base64: body.base64,
+          mimeType: body.mimeType,
+          imageUrl: body.imageUrl,
+          model: model === 'gemini-2.5-flash' ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp',
+          prompt
+        }, abortController.signal),
+        new Promise<never>((_, reject) => {
           abortController.signal.addEventListener('abort', () => {
             reject(new Error('DECODE_TIMEOUT'));
           });
         })
       ]);
+
+      text = result.text;
       clearTimeout(timeoutId);
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error.message === 'DECODE_TIMEOUT') {
         const ms = Date.now() - startTime;
-        console.log(`${logPrefix} decodeOutcome=TIMEOUT ms=${ms}`);
+        console.log(`${logPrefix} Timeout ms=${ms}`);
         await refundToken(dbClient, userData.id, logPrefix);
-        return cors(json({ ok: false, error: 'decode timeout' }, 504));
+        return cors(json({ success: false, error: 'decode timeout' }, 504));
       }
       throw error;
     }
   } catch (error: any) {
     const ms = Date.now() - startTime;
-    console.error(`${logPrefix} decodeOutcome=PROVIDER_ERROR ms=${ms} error=${error.message}`);
+    console.error(`${logPrefix} Provider error ms=${ms}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ ok: false, error: 'internal error' }, 500));
+    return cors(json({ success: false, error: 'internal error' }, 500));
   }
 
-  const normalized = {
-    styleCodes: result.styleCodes || [],
-    tags: result.tags || [],
-    subjects: result.subjects || [],
-    story: result.prompts?.story || '',
-    mix: result.prompts?.mix || '',
-    expand: result.prompts?.expand || '',
-    sound: result.prompts?.sound || ''
-  };
+  const ms = Date.now() - startTime;
+  console.log(`${logPrefix} Success ms=${ms}`);
 
-  const { data: decodeRecord } = await dbClient.from('decodes').insert({
+  await dbClient.from('decodes').insert({
     user_id: userData.id,
     input_media_id: null,
     model: model,
-    raw_json: result,
-    normalized_json: normalized,
+    raw_json: { text },
+    normalized_json: { content: text },
     cost_tokens: 1,
     private: true
-  }).select('id').single();
-
-  const ms = Date.now() - startTime;
-  console.log(`${logPrefix} decodeOutcome=OK userId=${user.id} model=${model} provider=${aiProvider} ms=${ms}`);
+  });
 
   return cors(json({
-    ok: true,
-    decode: {
-      id: decodeRecord?.id || null,
-      model: model,
-      normalized: normalized,
-      spentTokens: 1
+    success: true,
+    result: {
+      content: text,
+      tokensUsed: 1
     }
   }));
 }
@@ -172,6 +195,6 @@ async function refundToken(dbClient: any, userId: string, logPrefix: string): Pr
       console.log(`${logPrefix} Refunded 1 token`);
     }
   } catch (e) {
-    console.error(`${logPrefix} Refund error:`, e);
+    console.error(`${logPrefix} Refund error`);
   }
 }
