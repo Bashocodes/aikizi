@@ -106,6 +106,12 @@ export async function ensureAccount(env: Env, req: Request) {
         break;
       }
 
+      if (profileError.message?.includes('duplicate key') && profileError.message?.includes('profiles_pkey')) {
+        console.log('[FN ensure-account] Profile already exists (detected via pkey constraint) - continuing');
+        profileCreated = true;
+        break;
+      }
+
       if (profileError.message?.includes('duplicate key') && profileError.message?.includes('profiles_handle_key')) {
         console.warn('[FN ensure-account] Handle collision on attempt', attempt + 1, '- retrying with new handle');
         lastError = profileError;
