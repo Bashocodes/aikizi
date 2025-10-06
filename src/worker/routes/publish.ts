@@ -237,7 +237,11 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
           width: uploadResult.width || 1024,
           height: uploadResult.height || 1024,
           bytes: uploadResult.bytes || 0,
-          variants: { public: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${uploadResult.cf_image_id}/public` }
+          variants: {
+            public: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${uploadResult.cf_image_id}/public`,
+            grid: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${uploadResult.cf_image_id}/grid`,
+            thumb: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${uploadResult.cf_image_id}/thumb`
+          }
         })
         .select('id')
         .single();
@@ -248,7 +252,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
       }
 
       mediaAssetId = mediaAsset.id;
-      console.log(`${logPrefix} media_id=${mediaAssetId}`);
+      console.log(`${logPrefix} media_id=${mediaAssetId} table=public.media_assets`);
     } catch (error: any) {
       console.error(`${logPrefix} Image upload error:`, error.message);
       return bad('image_upload_failed');
@@ -262,7 +266,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
 
     if (existingAsset) {
       mediaAssetId = existingAsset.id;
-      console.log(`${logPrefix} Using existing media_id=${mediaAssetId}`);
+      console.log(`${logPrefix} Using existing media_id=${mediaAssetId} table=public.media_assets`);
     } else {
       const { data: mediaAsset, error: mediaError } = await sb
         .from('media_assets')
@@ -272,7 +276,11 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
           width: 1024,
           height: 1024,
           bytes: 0,
-          variants: { public: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${payload.cf_image_id}/public` }
+          variants: {
+            public: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${payload.cf_image_id}/public`,
+            grid: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${payload.cf_image_id}/grid`,
+            thumb: `https://imagedelivery.net/${env.CF_IMAGES_ACCOUNT_HASH}/${payload.cf_image_id}/thumb`
+          }
         })
         .select('id')
         .single();
@@ -283,7 +291,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
       }
 
       mediaAssetId = mediaAsset.id;
-      console.log(`${logPrefix} media_id=${mediaAssetId}`);
+      console.log(`${logPrefix} media_id=${mediaAssetId} table=public.media_assets`);
     }
   } else {
     console.log(`${logPrefix} No image provided (cf_image_id or image_blob)`);
@@ -308,7 +316,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     return bad('post_creation_failed');
   }
 
-  console.log(`${logPrefix} post_id=${post.id} slug=${post.slug}`);
+  console.log(`${logPrefix} post_id=${post.id} slug=${post.slug} table=public.posts`);
 
   await sb.from('post_meta').insert({
     post_id: post.id,
@@ -423,7 +431,7 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
     return bad('post_creation_failed');
   }
 
-  console.log(`${logPrefix} draft post_id=${post.id}`);
+  console.log(`${logPrefix} post_id=${post.id} slug=${post.slug} table=public.posts`);
 
   return json({
     ok: true,

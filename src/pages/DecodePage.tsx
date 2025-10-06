@@ -353,7 +353,7 @@ export function DecodePage() {
         visibility: 'public'
       });
 
-      if (!postResponse.success) {
+      if (!postResponse.ok) {
         alert(postResponse.error || 'Failed to create post');
         return;
       }
