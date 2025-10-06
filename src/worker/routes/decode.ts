@@ -34,35 +34,44 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   }
 
   const dbClient = supa(env, authResult.token);
+  console.log(`${logPrefix} Looking up user by auth_id=${authResult.user.id}`);
+
   const { data: userData } = await dbClient.from('users').select('id').eq('auth_id', authResult.user.id).single();
 
   if (!userData) {
-    console.log(`${logPrefix} User not found in DB`);
+    console.log(`${logPrefix} User not found in DB: auth_id=${authResult.user.id}`);
     return cors(json({ success: false, error: 'auth required' }, 401));
   }
+
+  const userId = userData.id;
+  console.log(`${logPrefix} Resolved: auth_id=${authResult.user.id} -> internal_id=${userId}`);
 
   const { data: entitlementData } = await dbClient
     .from('entitlements')
     .select('tokens_balance')
-    .eq('user_id', userData.id)
+    .eq('user_id', userId)
     .single();
 
   if (!entitlementData || entitlementData.tokens_balance < 1) {
-    console.log(`${logPrefix} Insufficient tokens`);
+    console.log(`${logPrefix} Insufficient tokens: user_id=${userId} balance=${entitlementData?.tokens_balance ?? 'null'}`);
     return cors(json({ success: false, error: 'insufficient tokens' }, 402));
   }
 
+  const oldBalance = entitlementData.tokens_balance;
+  const newBalance = oldBalance - 1;
+  console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${newBalance}`);
+
   const { error: spendError } = await dbClient
     .from('entitlements')
-    .update({ tokens_balance: entitlementData.tokens_balance - 1 })
-    .eq('user_id', userData.id);
+    .update({ tokens_balance: newBalance })
+    .eq('user_id', userId);
 
   if (spendError) {
-    console.error(`${logPrefix} Failed to spend token`);
+    console.error(`${logPrefix} Failed to spend token: user_id=${userId} error=${spendError.message}`);
     return cors(json({ success: false, error: 'internal error' }, 500));
   }
 
-  console.log(`${logPrefix} Spent 1 token`);
+  console.log(`${logPrefix} Token spent successfully: user_id=${userId} new_balance=${newBalance}`);
 
   let body: Body;
   try {
@@ -180,6 +189,7 @@ Return ONLY valid JSON, no markdown formatting.`;
 
 async function refundToken(dbClient: any, userId: string, logPrefix: string): Promise<void> {
   try {
+    console.log(`${logPrefix} Attempting refund for user_id=${userId}`);
     const { data, error } = await dbClient
       .from('entitlements')
       .select('tokens_balance')
@@ -187,13 +197,17 @@ async function refundToken(dbClient: any, userId: string, logPrefix: string): Pr
       .single();
 
     if (!error && data) {
+      const oldBalance = data.tokens_balance;
+      const newBalance = oldBalance + 1;
       await dbClient
         .from('entitlements')
-        .update({ tokens_balance: data.tokens_balance + 1 })
+        .update({ tokens_balance: newBalance })
         .eq('user_id', userId);
-      console.log(`${logPrefix} Refunded 1 token`);
+      console.log(`${logPrefix} Refunded 1 token: user_id=${userId} ${oldBalance} -> ${newBalance}`);
+    } else {
+      console.error(`${logPrefix} Refund failed to get balance: user_id=${userId} error=${error?.message}`);
     }
   } catch (e) {
-    console.error(`${logPrefix} Refund error`);
+    console.error(`${logPrefix} Refund error: user_id=${userId}`, e);
   }
 }

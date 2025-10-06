@@ -170,6 +170,8 @@ export function DecodePage() {
 
         setIsDecoding(false);
         setDecodeStatus('error');
+        console.log('[DecodePage] Refreshing balance after decode error...');
+        await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
         return;
       }
@@ -207,12 +209,16 @@ export function DecodePage() {
         setSpentTokens(response.result.tokensUsed || 1);
         setIsDecoding(false);
         setDecodeStatus('done');
+        console.log('[DecodePage] Refreshing balance after successful decode...');
+        await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
       } else {
         console.error('[DecodePage] Unexpected response format');
         setDecodeError('Unexpected response from server. Please try again.');
         setIsDecoding(false);
         setDecodeStatus('error');
+        console.log('[DecodePage] Refreshing balance after unexpected response...');
+        await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
       }
     } catch (error: any) {
@@ -226,6 +232,8 @@ export function DecodePage() {
 
       setIsDecoding(false);
       setDecodeStatus('error');
+      console.log('[DecodePage] Refreshing balance after exception...');
+      await new Promise(resolve => setTimeout(resolve, 500));
       await refreshTokenBalance();
     }
   };

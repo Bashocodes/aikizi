@@ -134,13 +134,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data;
   };
 
-  const fetchTokenBalance = async (retryCount = 0): Promise<{ tokens_balance: number; plan_name: string }> => {
+  const fetchTokenBalance = async (retryCount = 0, forceRefresh = false): Promise<{ tokens_balance: number; plan_name: string }> => {
     const now = Date.now();
-    if (now - lastBalanceFetchRef.current < 10000) {
+    if (!forceRefresh && now - lastBalanceFetchRef.current < 10000) {
       console.log('[Auth] Balance fetch debounced (< 10s since last fetch)');
       return { tokens_balance: tokenBalance, plan_name: planName };
     }
     lastBalanceFetchRef.current = now;
+    console.log('[Auth] Fetching balance (forceRefresh=' + forceRefresh + ')...');
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -197,11 +198,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const refreshTokenBalance = async () => {
+  const refreshTokenBalance = async (forceRefresh = false) => {
     setIsRefreshingBalance(true);
 
     try {
-      const balance = await fetchTokenBalance();
+      lastBalanceFetchRef.current = 0;
+      const balance = await fetchTokenBalance(0, true);
       setTokenBalance(balance.tokens_balance);
       setPlanName(balance.plan_name);
       console.log('[Auth] Token balance refreshed:', balance.tokens_balance);

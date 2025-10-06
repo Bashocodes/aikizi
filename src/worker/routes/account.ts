@@ -59,7 +59,7 @@ export async function balance(env: Env, req: Request, reqId?: string) {
   }
 
   const sb = supa(env, authResult.token);
-  console.log(`${logPrefix} [balance] Using RLS client for user=${authResult.user.id}`);
+  console.log(`${logPrefix} [balance] Using RLS client for auth_id=${authResult.user.id}`);
 
   // First get user's internal ID
   const { data: userRecord, error: userError } = await sb
@@ -69,11 +69,12 @@ export async function balance(env: Env, req: Request, reqId?: string) {
     .maybeSingle();
 
   if (userError || !userRecord) {
-    console.error(`${logPrefix} [balance] User lookup failed:`, userError?.message);
+    console.error(`${logPrefix} [balance] User lookup failed: auth_id=${authResult.user.id} error=${userError?.message}`);
     return cors(bad('not found', 404));
   }
 
   const userId = userRecord.id;
+  console.log(`${logPrefix} [balance] Resolved: auth_id=${authResult.user.id} -> internal_id=${userId}`);
 
   // Query entitlements with RLS
   const { data: ent, error } = await sb
@@ -82,7 +83,7 @@ export async function balance(env: Env, req: Request, reqId?: string) {
     .eq('user_id', userId)
     .maybeSingle();
 
-  console.log(`${logPrefix} [balance] RLS result`, { ent, error: error?.message });
+  console.log(`${logPrefix} [balance] Query result: user_id=${userId} balance=${ent?.tokens_balance ?? 'null'} error=${error?.message ?? 'none'}`);
 
   const balance = ent?.tokens_balance ?? 0;
   return cors(json({ ok: true, balance }));
