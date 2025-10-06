@@ -2,6 +2,7 @@ import { json } from '../lib/json';
 import { supa } from '../lib/supa';
 import { cors } from '../lib/cors';
 import { requireUser } from '../lib/auth';
+import { idemKey } from '../lib/idem';
 import { callGeminiREST } from '../providers/gemini-rest';
 import type { Env } from '../types';
 
@@ -46,6 +47,7 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   const userId = userData.id;
   console.log(`${logPrefix} Resolved: auth_id=${authResult.user.id} -> internal_id=${userId}`);
 
+  // Check balance first
   const { data: entitlementData } = await dbClient
     .from('entitlements')
     .select('tokens_balance')
@@ -58,19 +60,23 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   }
 
   const oldBalance = entitlementData.tokens_balance;
-  const newBalance = oldBalance - 1;
-  console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${newBalance}`);
+  console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${oldBalance - 1}`);
 
-  const { error: spendError } = await dbClient
-    .from('entitlements')
-    .update({ tokens_balance: newBalance })
-    .eq('user_id', userId);
+  // Generate idempotency key for this decode request
+  const idemKeyValue = idemKey(req) || `decode-${authResult.user.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  // Use spend_tokens RPC function (SECURITY DEFINER)
+  const { data: spendResult, error: spendError } = await dbClient.rpc('spend_tokens', {
+    p_cost: 1,
+    p_idem_key: idemKeyValue
+  });
 
   if (spendError) {
     console.error(`${logPrefix} Failed to spend token: user_id=${userId} error=${spendError.message}`);
-    return cors(json({ success: false, error: 'internal error' }, 500));
+    return cors(json({ success: false, error: 'insufficient tokens' }, 402));
   }
 
+  const newBalance = spendResult?.[0]?.balance ?? (oldBalance - 1);
   console.log(`${logPrefix} Token spent successfully: user_id=${userId} new_balance=${newBalance}`);
 
   let body: Body;
