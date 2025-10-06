@@ -83,9 +83,11 @@ export function PostDetailPage() {
 
       const { data: mediaAsset } = await supabase
         .from('media_assets')
-        .select('variants')
+        .select('variants, public_id, provider')
         .eq('id', postData.image_id)
         .maybeSingle();
+
+      console.log('Media asset data:', mediaAsset);
 
       const { data: postMeta } = await supabase
         .from('post_meta')
@@ -248,12 +250,20 @@ export function PostDetailPage() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid lg:grid-cols-2 gap-8">
           <div className="aspect-square bg-gray-200 dark:bg-gray-800 rounded-2xl overflow-hidden">
-            {post.media_assets?.variants && (
+            {post.media_assets?.variants ? (
               <img
-                src={(post.media_assets.variants as any).full || (post.media_assets.variants as any).grid}
+                src={(post.media_assets.variants as any).public || (post.media_assets.variants as any).grid || (post.media_assets.variants as any).thumb}
                 alt={post.title}
                 className="w-full h-full object-cover"
+                onError={(e) => {
+                  console.error('Image failed to load:', (e.target as HTMLImageElement).src);
+                  console.log('Available variants:', post.media_assets?.variants);
+                }}
               />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-gray-500">
+                <p>Image not available</p>
+              </div>
             )}
           </div>
 
