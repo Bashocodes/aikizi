@@ -31,8 +31,10 @@ export function DecodePage() {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [isDecoding, setIsDecoding] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isPosting, setIsPosting] = useState(false);
   const [result, setResult] = useState<DecodeResult | null>(null);
   const [publishedPostId, setPublishedPostId] = useState<string | null>(null);
+  const [postedToGallery, setPostedToGallery] = useState(false);
   const [insufficientTokens, setInsufficientTokens] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState<DecodeStatus>('idle');
   const [decodeError, setDecodeError] = useState<string | null>(null);
@@ -301,6 +303,71 @@ export function DecodePage() {
     }
   };
 
+  const handlePostToGallery = async () => {
+    if (!result || !selectedFile) {
+      alert('No decode result to post');
+      return;
+    }
+
+    setIsPosting(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('Please sign in to post');
+        return;
+      }
+
+      const uploadResponse = await api.post('/images/direct-upload', {});
+      if (!uploadResponse.ok || !uploadResponse.uploadURL || !uploadResponse.id) {
+        alert('Failed to get upload URL');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const uploadResult = await fetch(uploadResponse.uploadURL, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!uploadResult.ok) {
+        alert('Failed to upload image');
+        return;
+      }
+
+      const analysisText = JSON.stringify({
+        styleCodes: result.styleCodes,
+        tags: result.tags,
+        subjects: result.subjects,
+        story: result.story,
+        mix: result.mix,
+        expand: result.expand,
+        sound: result.sound
+      });
+
+      const postResponse = await api.post('/posts/create', {
+        cf_image_id: uploadResponse.id,
+        analysis_text: analysisText,
+        visibility: 'public'
+      });
+
+      if (!postResponse.success) {
+        alert(postResponse.error || 'Failed to create post');
+        return;
+      }
+
+      setPostedToGallery(true);
+      alert('Posted to gallery successfully!');
+    } catch (error) {
+      console.error('Error posting to gallery:', error);
+      alert('Failed to post to gallery. Please try again.');
+    } finally {
+      setIsPosting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -371,10 +438,9 @@ export function DecodePage() {
                         setPreviewUrl(null);
                         setResult(null);
                         setDecodeError(null);
-                        setDecodeStatus(null);
-                        setJobId(null);
-                        setConsecutive401s(0);
-                        stopPolling();
+                        setDecodeStatus('idle');
+                        setPostedToGallery(false);
+                        setSpentTokens(0);
                       }}
                       className="absolute top-4 right-4 px-4 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-white rounded-lg font-semibold hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
@@ -538,6 +604,56 @@ export function DecodePage() {
                 </div>
               </div>
 
+              {postedToGallery ? (
+                <div className="space-y-4">
+                  <div className="backdrop-blur-lg bg-green-50/70 dark:bg-green-900/30 rounded-xl p-6 border border-green-200 dark:border-green-700 flex items-start gap-3">
+                    <CheckCircle className="w-6 h-6 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-green-900 dark:text-green-100 mb-1">Posted to Gallery!</p>
+                      <p className="text-sm text-green-800 dark:text-green-200">Your decoded image is now visible in the public gallery.</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => navigate('/explore')}
+                      className="py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-semibold hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+                    >
+                      View Gallery
+                      <ExternalLink className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedFile(null);
+                        setPreviewUrl(null);
+                        setResult(null);
+                        setPostedToGallery(false);
+                        setDecodeError(null);
+                        setDecodeStatus('idle');
+                        setSpentTokens(0);
+                      }}
+                      className="py-3 bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      Decode Another
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handlePostToGallery}
+                  disabled={isPosting}
+                  className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isPosting ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white dark:border-gray-900"></div>
+                      Posting...
+                    </>
+                  ) : (
+                    'Post to Gallery'
+                  )}
+                </button>
+              )}
+
               {isPublisher && (
                 <>
                   {publishedPostId ? (
@@ -563,10 +679,10 @@ export function DecodePage() {
                             setPreviewUrl(null);
                             setResult(null);
                             setPublishedPostId(null);
+                            setPostedToGallery(false);
                             setDecodeError(null);
-                            setDecodeStatus(null);
-                            setJobId(null);
-                            setConsecutive401s(0);
+                            setDecodeStatus('idle');
+                            setSpentTokens(0);
                           }}
                           className="py-3 bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
                         >
@@ -586,7 +702,7 @@ export function DecodePage() {
                           Publishing...
                         </>
                       ) : (
-                        'Post Publicly'
+                        'Publish Full Post'
                       )}
                     </button>
                   )}
