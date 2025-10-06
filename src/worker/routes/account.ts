@@ -45,7 +45,7 @@ export async function ensureAccount(env: Env, req: Request) {
 }
 
 export async function balance(env: Env, req: Request, reqId?: string) {
-  const logPrefix = reqId ? `[${reqId}] [balance]` : '[balance]';
+  const logPrefix = reqId ? `[${reqId}]` : '';
 
   let authResult;
   try {
@@ -59,39 +59,31 @@ export async function balance(env: Env, req: Request, reqId?: string) {
   }
 
   const sb = supa(env, authResult.token);
-  console.log(`${logPrefix} Fetching user record for auth_id=${authResult.user.id}`);
+  console.log(`${logPrefix} [balance] Using RLS client for user=${authResult.user.id}`);
 
-  const { data: userRecord, error: userError } = await fromSafe(sb, 'users')
+  // First get user's internal ID
+  const { data: userRecord, error: userError } = await sb
+    .from('users')
     .select('id')
     .eq('auth_id', authResult.user.id)
     .maybeSingle();
 
-  if (userError) {
-    console.error(`${logPrefix} User lookup error:`, userError.message);
-    return cors(bad('user_lookup_failed', 500));
-  }
-
-  if (!userRecord) {
-    console.log(`${logPrefix} User not found: ${authResult.user.id}`);
+  if (userError || !userRecord) {
+    console.error(`${logPrefix} [balance] User lookup failed:`, userError?.message);
     return cors(bad('not found', 404));
   }
 
   const userId = userRecord.id;
-  console.log(`${logPrefix} User found, userId=${userId}, querying entitlements`);
 
-  const { data: entitlement, error: entitlementError } = await fromSafe(sb, 'entitlements')
+  // Query entitlements with RLS
+  const { data: ent, error } = await sb
+    .from('entitlements')
     .select('tokens_balance')
     .eq('user_id', userId)
     .maybeSingle();
 
-  if (entitlementError) {
-    console.error(`${logPrefix} Entitlements query error:`, entitlementError.message);
-    console.log(`${logPrefix} Defaulting to balance: 0`);
-    return cors(json({ ok: true, balance: 0 }));
-  }
+  console.log(`${logPrefix} [balance] RLS result`, { ent, error: error?.message });
 
-  const balance = entitlement?.tokens_balance ?? 0;
-  console.log(`${logPrefix} RLS balance result`, { userId, balance, hasEntitlement: !!entitlement });
-  console.log(`${logPrefix} Balance retrieved: ${balance}`);
+  const balance = ent?.tokens_balance ?? 0;
   return cors(json({ ok: true, balance }));
 }
