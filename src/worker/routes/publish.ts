@@ -1,5 +1,5 @@
 import { json, bad } from '../lib/json';
-import { supa } from '../lib/supa';
+import { supa, fromSafe } from '../lib/supa';
 import { requireUser } from '../lib/auth';
 import type { Env } from '../types';
 
@@ -229,8 +229,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     try {
       const uploadResult = await uploadImageToCloudflare(env, imageBlob, logPrefix);
 
-      const { data: mediaAsset, error: mediaError } = await sb
-        .from('media_assets')
+      const { data: mediaAsset, error: mediaError } = await fromSafe(sb, 'media_assets')
         .insert({
           provider: 'cloudflare',
           public_id: uploadResult.cf_image_id,
@@ -258,8 +257,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
       return bad('image_upload_failed');
     }
   } else if (payload.cf_image_id) {
-    const { data: existingAsset } = await sb
-      .from('media_assets')
+    const { data: existingAsset } = await fromSafe(sb, 'media_assets')
       .select('id')
       .eq('public_id', payload.cf_image_id)
       .maybeSingle();
@@ -268,8 +266,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
       mediaAssetId = existingAsset.id;
       console.log(`${logPrefix} Using existing media_id=${mediaAssetId} table=public.media_assets`);
     } else {
-      const { data: mediaAsset, error: mediaError } = await sb
-        .from('media_assets')
+      const { data: mediaAsset, error: mediaError } = await fromSafe(sb, 'media_assets')
         .insert({
           provider: 'cloudflare',
           public_id: payload.cf_image_id,
@@ -298,10 +295,9 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     return bad('image_required');
   }
 
-  console.log(`${logPrefix} table=posts userId=${userRecord.id} cfImageId=${payload.cf_image_id || null} mediaId=${mediaAssetId}`);
+  console.log(`${logPrefix} about-to-insert table='posts' userId=${userRecord.id} mediaId=${mediaAssetId}`);
 
-  const { data: post, error: postError } = await sb
-    .from('posts')
+  const { data: post, error: postError } = await fromSafe(sb, 'posts')
     .insert({
       owner_id: userRecord.id,
       title: derivedTitle,
@@ -315,7 +311,7 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
 
   if (postError) {
     console.error(`${logPrefix} Post insert error supabaseCode=${postError.code} message=${postError.message}:`, postError);
-    return bad('post_creation_failed');
+    return json({ error: 'post_creation_failed' });
   }
 
   console.log(`${logPrefix} insert ok postId=${post.id} slug=${post.slug}`);
@@ -406,8 +402,7 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
   let mediaAssetId: string | null = null;
 
   if (payload.cf_image_id) {
-    const { data: existingAsset } = await sb
-      .from('media_assets')
+    const { data: existingAsset } = await fromSafe(sb, 'media_assets')
       .select('id')
       .eq('public_id', payload.cf_image_id)
       .maybeSingle();
@@ -415,10 +410,9 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
     mediaAssetId = existingAsset?.id || null;
   }
 
-  console.log(`${logPrefix} table=posts userId=${userRecord.id} cfImageId=${payload.cf_image_id || null} mediaId=${mediaAssetId}`);
+  console.log(`${logPrefix} about-to-insert table='posts' userId=${userRecord.id} mediaId=${mediaAssetId}`);
 
-  const { data: post, error: postError } = await sb
-    .from('posts')
+  const { data: post, error: postError } = await fromSafe(sb, 'posts')
     .insert({
       owner_id: userRecord.id,
       title: derivedTitle,
@@ -432,7 +426,7 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
 
   if (postError) {
     console.error(`${logPrefix} Post insert error supabaseCode=${postError.code} message=${postError.message}:`, postError);
-    return bad('post_creation_failed');
+    return json({ error: 'post_creation_failed' });
   }
 
   console.log(`${logPrefix} insert ok postId=${post.id} slug=${post.slug}`);
@@ -446,41 +440,63 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
 }
 
 export async function getPublicPosts(env: Env, req: Request) {
-  const sb = supa(env, req.headers.get('authorization') || undefined);
+  const sb = supa(env);
 
-  const { data: posts, error } = await sb
-    .from('posts')
-    .select(`
-      id,
-      title,
-      slug,
-      created_at,
-      media_assets!posts_image_id_fkey (
-        variants,
-        public_id
-      ),
-      post_styles!post_styles_post_id_fkey (
-        style_triplet,
-        artist_oneword
-      ),
-      users!posts_owner_id_fkey (
-        id
-      ),
-      profiles:users!posts_owner_id_fkey (
-        handle,
-        display_name,
-        avatar_url
-      )
-    `)
+  try {
+    const { data: enrichedPosts, error: enrichedError } = await fromSafe(sb, 'posts')
+      .select(`
+        id,
+        title,
+        slug,
+        created_at,
+        visibility,
+        status,
+        image_id,
+        owner_id,
+        media_assets!posts_image_id_fkey (
+          variants,
+          public_id
+        ),
+        post_styles!post_styles_post_id_fkey (
+          style_triplet,
+          artist_oneword
+        ),
+        users!posts_owner_id_fkey (
+          id,
+          profiles!profiles_user_id_fkey (
+            handle,
+            display_name,
+            avatar_url
+          )
+        )
+      `)
+      .eq('visibility', 'public')
+      .eq('status', 'published')
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    if (!enrichedError && enrichedPosts) {
+      console.log('[getPublicPosts] Enriched query success, count:', enrichedPosts.length);
+      return json({ success: true, posts: enrichedPosts });
+    }
+
+    console.warn('[getPublicPosts] Enriched query failed, falling back to minimal:', enrichedError?.message);
+  } catch (enrichedErr) {
+    console.warn('[getPublicPosts] Enriched query exception, falling back to minimal');
+  }
+
+  const { data: posts, error } = await fromSafe(sb, 'posts')
+    .select('id, title, slug, visibility, status, created_at, image_id, owner_id')
     .eq('visibility', 'public')
     .eq('status', 'published')
     .order('created_at', { ascending: false })
-    .limit(50);
+    .limit(30);
 
   if (error) {
-    console.error('[getPublicPosts] Query error:', error);
-    return bad('failed to fetch posts: ' + error.message);
+    console.error('[getPublicPosts] Minimal query error:', error);
+    return json({ error: 'failed to fetch posts: ' + error.message });
   }
 
+  console.log('[getPublicPosts] Minimal query success, count:', posts?.length || 0);
   return json({ success: true, posts: posts || [] });
 }

@@ -32,15 +32,25 @@ export function supa(env: Env, authJwt?: string) {
     });
   }
 
-  if (!env.SUPABASE_SERVICE_KEY) {
-    throw new Error('SUPABASE_SERVICE_KEY is required');
+  if (!env.SUPABASE_ANON_KEY) {
+    throw new Error('SUPABASE_ANON_KEY is required for anon client');
   }
 
-  console.log('[supa] Creating service client (bypasses RLS)');
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
+  console.log('[supa] Creating anon client');
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
     auth: {
       persistSession: false,
       autoRefreshToken: false
     }
   });
+}
+
+export function fromSafe(sb: any, table: string) {
+  if (/^public[._]/i.test(table)) {
+    table = table.replace(/^public[._]/i, '');
+  }
+  if (table.includes('.')) {
+    throw new Error(`Do not pass dotted names: ${table}`);
+  }
+  return sb.from(table);
 }
