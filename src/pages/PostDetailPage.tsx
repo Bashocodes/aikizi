@@ -59,26 +59,71 @@ export function PostDetailPage() {
 
   const fetchPost = async () => {
     try {
-      const { data, error } = await supabase
+      const { data: postData, error: postError } = await supabase
         .from('posts')
-        .select(`
-          id,
-          title,
-          slug,
-          created_at,
-          media_assets (variants),
-          post_meta (prompt_short, prompt_full, mj_version, model_used),
-          post_styles (style_triplet, artist_oneword, style_tags),
-          post_subjects (subject_slug),
-          post_tags (tag),
-          sref_codes (locked, price_tokens, code_encrypted)
-        `)
+        .select('id, title, slug, created_at, image_id, visibility, status')
         .eq('id', postId)
         .eq('visibility', 'public')
+        .eq('status', 'published')
         .maybeSingle();
 
-      if (error) throw error;
-      setPost(data);
+      if (postError) {
+        console.error('Error fetching post:', postError);
+        setLoading(false);
+        return;
+      }
+
+      if (!postData) {
+        console.log('Post not found');
+        setLoading(false);
+        return;
+      }
+
+      const { data: mediaAsset } = await supabase
+        .from('media_assets')
+        .select('variants')
+        .eq('id', postData.image_id)
+        .maybeSingle();
+
+      const { data: postMeta } = await supabase
+        .from('post_meta')
+        .select('prompt_short, prompt_full, mj_version, model_used')
+        .eq('post_id', postId)
+        .maybeSingle();
+
+      const { data: postStyles } = await supabase
+        .from('post_styles')
+        .select('style_triplet, artist_oneword, style_tags')
+        .eq('post_id', postId);
+
+      const { data: postSubjects } = await supabase
+        .from('post_subjects')
+        .select('subject_slug')
+        .eq('post_id', postId);
+
+      const { data: postTags } = await supabase
+        .from('post_tags')
+        .select('tag')
+        .eq('post_id', postId);
+
+      const { data: srefCode } = await supabase
+        .from('sref_codes')
+        .select('locked, price_tokens, code_encrypted')
+        .eq('post_id', postId)
+        .maybeSingle();
+
+      const combinedPost: PostDetail = {
+        ...postData,
+        media_assets: mediaAsset || { variants: null },
+        post_meta: postMeta || { prompt_short: null, prompt_full: null, mj_version: null, model_used: null },
+        post_styles: postStyles || [],
+        post_subjects: postSubjects || [],
+        post_tags: postTags || [],
+        sref_codes: srefCode || null
+      };
+
+      console.log('Post loaded:', combinedPost);
+      setPost(combinedPost);
     } catch (error) {
       console.error('Error fetching post:', error);
     } finally {
@@ -87,7 +132,7 @@ export function PostDetailPage() {
   };
 
   const checkBookmark = async () => {
-    if (!profile) return;
+    if (!userRecord) return;
 
     const { data } = await supabase
       .from('bookmarks')
@@ -100,7 +145,7 @@ export function PostDetailPage() {
   };
 
   const checkSrefUnlock = async () => {
-    if (!profile) return;
+    if (!userRecord) return;
 
     const { data } = await supabase
       .from('sref_unlocks')
@@ -113,7 +158,7 @@ export function PostDetailPage() {
   };
 
   const handleUnlockSref = async () => {
-    if (!profile || !post?.sref_codes) {
+    if (!userRecord || !post?.sref_codes) {
       return;
     }
 
@@ -155,7 +200,7 @@ export function PostDetailPage() {
   };
 
   const toggleBookmark = async () => {
-    if (!profile) return;
+    if (!userRecord) return;
 
     if (isBookmarked) {
       await supabase
