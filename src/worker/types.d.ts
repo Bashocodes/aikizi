@@ -5,6 +5,7 @@ export interface Env {
   SUPABASE_JWKS_URL: string;
   SUPABASE_JWT_ISSUER: string;
   CF_IMAGES_ACCOUNT_ID: string;
+  CF_IMAGES_ACCOUNT_HASH: string;
   CF_IMAGES_TOKEN: string;
   CORS_ORIGIN: string;
   AI_PROVIDER: string;

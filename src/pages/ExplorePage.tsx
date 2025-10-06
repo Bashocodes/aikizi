@@ -62,61 +62,28 @@ export function ExplorePage() {
     setLoading(true);
     setError(null);
     try {
-      console.log('Fetching posts from Supabase...');
+      console.log('Fetching posts via API...');
 
-      const [legacyPostsResult, publicPostsResult] = await Promise.allSettled([
-        supabase
-          .from('posts')
-          .select(`
-            id,
-            title,
-            slug,
-            created_at,
-            media_assets!posts_image_id_fkey (variants),
-            post_styles!post_styles_post_id_fkey (style_triplet, artist_oneword)
-          `)
-          .eq('visibility', 'public')
-          .eq('status', 'published')
-          .order('created_at', { ascending: false })
-          .limit(50),
-        api.get('/posts/public')
-      ]);
+      const response = await api.get('/posts/public');
 
-      const combinedPosts: CombinedPost[] = [];
-
-      if (legacyPostsResult.status === 'fulfilled' && legacyPostsResult.value.data) {
-        const legacyPosts = legacyPostsResult.value.data as Post[];
-        legacyPosts.forEach(post => {
-          combinedPosts.push({
-            id: post.id,
-            type: 'legacy',
-            created_at: post.created_at,
-            title: post.title,
-            slug: post.slug,
-            imageUrl: (post.media_assets?.variants as any)?.grid || (post.media_assets?.variants as any)?.thumb,
-            styleTriplet: post.post_styles?.[0]?.style_triplet
-          });
-        });
+      if (!response.success) {
+        throw new Error('Failed to fetch posts');
       }
 
-      if (publicPostsResult.status === 'fulfilled' && publicPostsResult.value.posts) {
-        const publicPosts = publicPostsResult.value.posts as PublicPost[];
-        publicPosts.forEach(post => {
-          combinedPosts.push({
-            id: post.id,
-            type: 'public',
-            created_at: post.created_at,
-            cf_image_id: post.cf_image_id,
-            analysis: post.analysis,
-            authorHandle: post.profiles?.handle,
-            authorName: post.profiles?.display_name || post.profiles?.handle
-          });
-        });
-      }
+      const apiPosts = response.posts || [];
+      const combinedPosts: CombinedPost[] = apiPosts.map((post: any) => ({
+        id: post.id,
+        type: 'legacy',
+        created_at: post.created_at,
+        title: post.title,
+        slug: post.slug,
+        imageUrl: post.media_assets?.variants?.grid || post.media_assets?.variants?.thumb || post.media_assets?.variants?.public,
+        styleTriplet: post.post_styles?.[0]?.style_triplet,
+        authorHandle: post.profiles?.handle,
+        authorName: post.profiles?.display_name || post.profiles?.handle
+      }));
 
-      combinedPosts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-      console.log('Combined posts:', { count: combinedPosts.length });
+      console.log('Posts loaded:', { count: combinedPosts.length });
       setPosts(combinedPosts);
     } catch (error) {
       console.error('Error fetching posts:', error);
@@ -136,7 +103,7 @@ export function ExplorePage() {
   };
 
   const handlePostClick = (post: CombinedPost) => {
-    if (post.type === 'legacy' && post.slug) {
+    if (post.slug) {
       navigate(`/p/${post.id}-${post.slug}`);
     } else {
       navigate(`/gallery/${post.id}`);
@@ -205,33 +172,26 @@ export function ExplorePage() {
                 className="group cursor-pointer"
               >
                 <div className="aspect-square bg-gray-200 dark:bg-gray-800 rounded-lg overflow-hidden mb-3 relative">
-                  {post.type === 'legacy' && post.imageUrl && (
+                  {post.imageUrl && (
                     <img
                       src={post.imageUrl}
                       alt={post.title || 'Post'}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                   )}
-                  {post.type === 'public' && post.cf_image_id && (
-                    <img
-                      src={`https://imagedelivery.net/${import.meta.env.VITE_CF_IMAGES_ACCOUNT_HASH}/${post.cf_image_id}/public`}
-                      alt="Decoded image"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
-                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
                 <h3 className="font-semibold text-gray-900 dark:text-white mb-1 line-clamp-1">
-                  {post.type === 'legacy' ? post.title : `Decoded by @${post.authorHandle}`}
+                  {post.title}
                 </h3>
-                {post.type === 'legacy' && post.styleTriplet && (
+                {post.styleTriplet && (
                   <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-1">
                     {post.styleTriplet}
                   </p>
                 )}
-                {post.type === 'public' && post.analysis && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-2">
-                    {JSON.parse(post.analysis).story?.slice(0, 100)}...
+                {post.authorHandle && (
+                  <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                    by @{post.authorHandle}
                   </p>
                 )}
               </div>

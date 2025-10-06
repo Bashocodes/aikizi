@@ -5,7 +5,7 @@ import { ensureAccount, balance } from './routes/account';
 import { spend } from './routes/wallet';
 import { directUpload, ensureVariants } from './routes/images';
 import { decode } from './routes/decode';
-import { publish, createPost, getPublicPosts } from './routes/publish';
+import { publish, createPost, savePost, getPublicPosts } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
 import { search } from './routes/search';
 
@@ -47,6 +47,8 @@ export default {
         response = allowOrigin(env, req, await publish(env, req));
       } else if (pathname === '/v1/posts/create' && req.method==='POST') {
         response = allowOrigin(env, req, await createPost(env, req, reqId));
+      } else if (pathname === '/v1/posts/save' && req.method==='POST') {
+        response = allowOrigin(env, req, await savePost(env, req, reqId));
       } else if (pathname === '/v1/posts/public' && req.method==='GET') {
         response = allowOrigin(env, req, await getPublicPosts(env, req));
       } else if (pathname === '/v1/sref/upload' && req.method==='POST') {
