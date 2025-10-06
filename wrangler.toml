@@ -25,6 +25,7 @@ ADMIN_USER_IDS = ""
 # - CF_IMAGES_TOKEN
 # - GEMINI_API_KEY
 # - SREF_ENCRYPTION_KEY
+# - CRON_SECRET
 
 # Let Wrangler manage your zone route
 [[routes]]
@@ -35,3 +36,6 @@ zone_name = "aikizi.xyz"
 # [[routes]]
 # pattern = "aikizi.com/v1/*"
 # zone_name = "aikizi.com"
+
+[triggers]
+crons = ["0 0 * * *"]

@@ -8,12 +8,26 @@ import { decode } from './routes/decode';
 import { publish, createPost, savePost, getPublicPosts } from './routes/publish';
 import { srefUpload, srefUnlock } from './routes/sref';
 import { search } from './routes/search';
+import { refreshTokens } from './routes/cron';
 
 function generateReqId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
 export default {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    console.log('[CRON] Scheduled event triggered:', event.cron);
+
+    const cronReq = new Request('https://internal/v1/cron/refresh-tokens', {
+      method: 'POST',
+      headers: {
+        'authorization': `Bearer ${env.CRON_SECRET || ''}`
+      }
+    });
+
+    ctx.waitUntil(refreshTokens(env, cronReq));
+  },
+
   async fetch(req: Request, env: Env): Promise<Response> {
     const reqId = generateReqId();
     const { pathname, searchParams } = new URL(req.url);
@@ -57,6 +71,8 @@ export default {
         response = allowOrigin(env, req, await srefUnlock(env, req));
       } else if (pathname === '/v1/search' && req.method==='GET') {
         response = allowOrigin(env, req, await search(env, req));
+      } else if (pathname === '/v1/cron/refresh-tokens' && req.method==='POST') {
+        response = allowOrigin(env, req, await refreshTokens(env, req));
       } else if (pathname === '/v1/debug/auth' && req.method==='GET') {
         response = allowOrigin(env, req, await debugAuth(env, req, reqId));
       } else if (pathname === '/v1/debug/decode' && req.method==='GET') {
