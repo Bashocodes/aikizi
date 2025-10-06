@@ -83,23 +83,43 @@ export async function ensureAccount(env: Env, req: Request) {
     console.log('[FN ensure-account] Creating profile for user:', user_id);
 
     const baseHandle = userEmail.split('@')[0] || `user${user_id.slice(0, 8)}`;
-    const uniqueHandle = await generateUniqueHandle(dbClient, baseHandle);
-
     const displayName = userMetadata.full_name || userMetadata.name || userEmail.split('@')[0] || 'User';
 
-    const { error: profileError } = await fromSafe(dbClient, 'profiles').insert({
-      user_id,
-      handle: uniqueHandle,
-      display_name: displayName,
-      is_public: false
-    });
+    let profileCreated = false;
+    let lastError = null;
 
-    if (profileError) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const uniqueHandle = attempt === 0
+        ? await generateUniqueHandle(dbClient, baseHandle)
+        : `${baseHandle}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+      const { error: profileError } = await fromSafe(dbClient, 'profiles').insert({
+        user_id,
+        handle: uniqueHandle,
+        display_name: displayName,
+        is_public: false
+      });
+
+      if (!profileError) {
+        console.log('[FN ensure-account] Profile created with handle:', uniqueHandle);
+        profileCreated = true;
+        break;
+      }
+
+      if (profileError.message?.includes('duplicate key') && profileError.message?.includes('profiles_handle_key')) {
+        console.warn('[FN ensure-account] Handle collision on attempt', attempt + 1, '- retrying with new handle');
+        lastError = profileError;
+        continue;
+      }
+
       console.error('[FN ensure-account] Failed to create profile:', profileError.message);
       return cors(bad('failed to create profile', 500));
     }
 
-    console.log('[FN ensure-account] Profile created with handle:', uniqueHandle);
+    if (!profileCreated) {
+      console.error('[FN ensure-account] Failed to create profile after 5 attempts:', lastError?.message);
+      return cors(bad('failed to create profile after retries', 500));
+    }
   }
 
   const { data: existingEntitlement } = await fromSafe(dbClient, 'entitlements')
