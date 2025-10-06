@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Env } from '../types';
 import { json } from './json';
+import { verifyTokenSafe, AuthError } from './jwks';
 
 export interface AuthResult {
   user: {
@@ -11,15 +12,9 @@ export interface AuthResult {
   token: string;
 }
 
-interface JWTPayload {
-  iss?: string;
-  sub?: string;
-  [key: string]: any;
-}
-
 /**
- * Extract and verify JWT from request headers
- * Identical auth logic for /v1/balance and /v1/decode
+ * Extract and verify JWT from request headers using JWKS
+ * This replaces the legacy HS256 verification
  */
 export async function requireUser(env: Env, req: Request, reqId?: string): Promise<AuthResult> {
   const logPrefix = reqId ? `[${reqId}] [auth]` : '[auth]';
@@ -29,7 +24,7 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
   const m = /^Bearer\s+(.+)$/i.exec(h);
   if (!m) {
     console.log(`${logPrefix} authOutcome=NO_AUTH_HEADER`);
-    throw new Response(JSON.stringify({ error: 'NO_AUTH_HEADER' }), {
+    throw new Response(JSON.stringify({ error: 'auth_required' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });
@@ -38,37 +33,42 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
   const token = m[1];
   console.log(`${logPrefix} tokenLen=${token.length}`);
 
-  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY) {
-    console.error(`${logPrefix} Missing Supabase credentials`);
-    throw new Response(JSON.stringify({ error: 'server configuration error' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  try {
+    const payload = await verifyTokenSafe(token, env, reqId);
 
-  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
+    if (!payload.sub) {
+      console.log(`${logPrefix} authOutcome=NO_SUB_CLAIM`);
+      throw new Response(JSON.stringify({ error: 'invalid_token' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
-  });
 
-  const { data, error } = await supabase.auth.getUser(token);
+    console.log(`${logPrefix} authOutcome=OK userId=${payload.sub}`);
 
-  if (error || !data?.user) {
-    console.log(`${logPrefix} authOutcome=INVALID_TOKEN ${error?.message || 'no user'}`);
-    throw new Response(JSON.stringify({ error: 'INVALID_TOKEN' }), {
+    return {
+      user: {
+        id: payload.sub,
+        email: payload.email,
+        ...payload
+      },
+      token
+    };
+  } catch (error) {
+    if (error instanceof AuthError) {
+      console.log(`${logPrefix} authOutcome=${error.message}`);
+      throw new Response(JSON.stringify({ error: error.message }), {
+        status: error.statusCode,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log(`${logPrefix} authOutcome=UNEXPECTED_ERROR`);
+    throw new Response(JSON.stringify({ error: 'auth_failed' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });
   }
-
-  console.log(`${logPrefix} authOutcome=OK userId=${data.user.id}`);
-
-  return {
-    user: data.user,
-    token
-  };
 }
 
 /**

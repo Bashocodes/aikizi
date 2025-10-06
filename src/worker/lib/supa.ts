@@ -2,36 +2,45 @@ import { createClient } from '@supabase/supabase-js';
 import type { Env } from '../types';
 
 export function supa(env: Env, authJwt?: string) {
-  // Debug logging
-  console.log('Supabase client creation:', {
+  console.log('[supa] client creation:', {
     hasUrl: !!env.SUPABASE_URL,
     hasAnonKey: !!env.SUPABASE_ANON_KEY,
     hasServiceKey: !!env.SUPABASE_SERVICE_KEY,
-    authJwt: !!authJwt,
-    urlLength: env.SUPABASE_URL?.length,
-    anonKeyLength: env.SUPABASE_ANON_KEY?.length,
-    serviceKeyLength: env.SUPABASE_SERVICE_KEY?.length
+    authJwt: !!authJwt
   });
 
   if (!env.SUPABASE_URL) {
     throw new Error('SUPABASE_URL is required');
   }
 
-  // Use anon key for JWT validation, service key for database operations
-  const key = authJwt ? env.SUPABASE_ANON_KEY : env.SUPABASE_SERVICE_KEY;
-  
-  if (!key) {
-    const missingKey = authJwt ? 'SUPABASE_ANON_KEY' : 'SUPABASE_SERVICE_KEY';
-    throw new Error(`${missingKey} is required`);
+  if (authJwt) {
+    if (!env.SUPABASE_ANON_KEY) {
+      throw new Error('SUPABASE_ANON_KEY is required');
+    }
+
+    console.log('[supa] Creating client with user token for RLS');
+    return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${authJwt}`
+        }
+      },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false
+      }
+    });
   }
 
-  // For JWT validation, we need both anon key and service key
-  if (authJwt && !env.SUPABASE_SERVICE_KEY) {
-    throw new Error('SUPABASE_SERVICE_KEY is required for JWT validation');
+  if (!env.SUPABASE_SERVICE_KEY) {
+    throw new Error('SUPABASE_SERVICE_KEY is required');
   }
 
-  const client = createClient(env.SUPABASE_URL, key, {
-    global: { headers: authJwt ? { Authorization: `Bearer ${authJwt}` } : {} }
+  console.log('[supa] Creating service client (bypasses RLS)');
+  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
   });
-  return client;
 }

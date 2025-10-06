@@ -11,6 +11,21 @@ AI_PROVIDER = "gemini" # or "openai"
 # Format: comma-separated list, e.g., "uuid1,uuid2,uuid3"
 ADMIN_USER_IDS = ""
 
+# JWKS Configuration (REQUIRED for JWT verification with asymmetric keys)
+# SUPABASE_JWKS_URL = "https://<PROJECT_REF>.supabase.co/auth/v1/.well-known/jwks.json"
+# SUPABASE_JWT_ISSUER = "https://<PROJECT_REF>.supabase.co/auth/v1"
+
+# Secret bindings (set via: wrangler secret put <NAME>)
+# - SUPABASE_URL
+# - SUPABASE_ANON_KEY
+# - SUPABASE_SERVICE_KEY
+# - SUPABASE_JWKS_URL
+# - SUPABASE_JWT_ISSUER
+# - CF_IMAGES_ACCOUNT_ID
+# - CF_IMAGES_TOKEN
+# - GEMINI_API_KEY
+# - SREF_ENCRYPTION_KEY
+
 # Let Wrangler manage your zone route
 [[routes]]
 pattern = "aikizi.xyz/v1/*"

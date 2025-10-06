@@ -1,14 +1,21 @@
 import { json, bad } from '../lib/json';
 import { supa } from '../lib/supa';
+import { requireUser } from '../lib/auth';
 import type { Env } from '../types';
 
 type Body = { title:string, slug:string, image_id:string, style_triplet:string, subjects:string[], tokens:string[], prompt_short?:string, model_used?:string, seo_snippet?:string };
-type CreatePostBody = { user_id:string, cf_image_id:string, analysis_text:string, visibility?:string };
+type CreatePostBody = { cf_image_id:string, analysis_text:string, visibility?:string };
 
 export async function publish(env: Env, req: Request){
-  const sb = supa(env, req.headers.get('authorization')||undefined);
-  const { data: user } = await sb.auth.getUser();
-  if (!user?.user) return bad('auth required', 401);
+  let authResult;
+  try {
+    authResult = await requireUser(env, req);
+  } catch (error) {
+    if (error instanceof Response) return error;
+    return bad('auth_required', 401);
+  }
+
+  const sb = supa(env, authResult.token);
   const body = await req.json() as Body;
   if(!body.title || !body.slug || !body.image_id || !body.style_triplet) return bad('missing fields');
 
@@ -21,16 +28,31 @@ export async function publish(env: Env, req: Request){
   return json({ ok:true, post_id: post.id });
 }
 
-export async function createPost(env: Env, req: Request) {
-  const sb = supa(env, req.headers.get('authorization')||undefined);
-  const { data: authData } = await sb.auth.getUser();
-  if (!authData?.user) return bad('auth required', 401);
+export async function createPost(env: Env, req: Request, reqId?: string) {
+  const logPrefix = reqId ? `[${reqId}] [createPost]` : '[createPost]';
+
+  let authResult;
+  try {
+    authResult = await requireUser(env, req, reqId);
+  } catch (error) {
+    if (error instanceof Response) return error;
+    return bad('auth_required', 401);
+  }
 
   const body = await req.json() as CreatePostBody;
-  if (!body.cf_image_id || !body.analysis_text) return bad('missing cf_image_id or analysis_text');
+  if (!body.cf_image_id || !body.analysis_text) {
+    console.log(`${logPrefix} Missing required fields`);
+    return bad('bad_request');
+  }
 
-  const { data: userRecord } = await sb.from('users').select('id').eq('auth_id', authData.user.id).maybeSingle();
-  if (!userRecord) return bad('user record not found', 404);
+  const sb = supa(env, authResult.token);
+  console.log(`${logPrefix} userId=${authResult.user.id} authJwt=true`);
+
+  const { data: userRecord } = await sb.from('users').select('id').eq('auth_id', authResult.user.id).maybeSingle();
+  if (!userRecord) {
+    console.log(`${logPrefix} User record not found for auth_id=${authResult.user.id}`);
+    return bad('user_record_not_found', 404);
+  }
 
   const { data: post, error } = await sb
     .from('public_posts')
@@ -44,10 +66,11 @@ export async function createPost(env: Env, req: Request) {
     .single();
 
   if (error) {
-    console.error('[createPost] Insert error:', error);
-    return bad('post creation failed: ' + error.message);
+    console.error(`${logPrefix} Insert error:`, error);
+    return bad('post_creation_failed');
   }
 
+  console.log(`${logPrefix} Post created successfully post_id=${post.id}`);
   return json({ success: true, post_url: `/gallery/${post.id}`, post_id: post.id });
 }
 

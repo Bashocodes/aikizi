@@ -46,7 +46,7 @@ export default {
       } else if (pathname === '/v1/publish' && req.method==='POST') {
         response = allowOrigin(env, req, await publish(env, req));
       } else if (pathname === '/v1/posts/create' && req.method==='POST') {
-        response = allowOrigin(env, req, await createPost(env, req));
+        response = allowOrigin(env, req, await createPost(env, req, reqId));
       } else if (pathname === '/v1/posts/public' && req.method==='GET') {
         response = allowOrigin(env, req, await getPublicPosts(env, req));
       } else if (pathname === '/v1/sref/upload' && req.method==='POST') {
