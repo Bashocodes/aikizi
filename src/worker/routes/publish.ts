@@ -298,6 +298,8 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     return bad('image_required');
   }
 
+  console.log(`${logPrefix} table=posts userId=${userRecord.id} cfImageId=${payload.cf_image_id || null} mediaId=${mediaAssetId}`);
+
   const { data: post, error: postError } = await sb
     .from('posts')
     .insert({
@@ -312,11 +314,11 @@ export async function createPost(env: Env, req: Request, reqId?: string) {
     .single();
 
   if (postError) {
-    console.error(`${logPrefix} Post insert error:`, postError);
+    console.error(`${logPrefix} Post insert error supabaseCode=${postError.code} message=${postError.message}:`, postError);
     return bad('post_creation_failed');
   }
 
-  console.log(`${logPrefix} post_id=${post.id} slug=${post.slug} table=public.posts`);
+  console.log(`${logPrefix} insert ok postId=${post.id} slug=${post.slug}`);
 
   await sb.from('post_meta').insert({
     post_id: post.id,
@@ -413,6 +415,8 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
     mediaAssetId = existingAsset?.id || null;
   }
 
+  console.log(`${logPrefix} table=posts userId=${userRecord.id} cfImageId=${payload.cf_image_id || null} mediaId=${mediaAssetId}`);
+
   const { data: post, error: postError } = await sb
     .from('posts')
     .insert({
@@ -427,11 +431,11 @@ export async function savePost(env: Env, req: Request, reqId?: string) {
     .single();
 
   if (postError) {
-    console.error(`${logPrefix} Post insert error:`, postError);
+    console.error(`${logPrefix} Post insert error supabaseCode=${postError.code} message=${postError.message}:`, postError);
     return bad('post_creation_failed');
   }
 
-  console.log(`${logPrefix} post_id=${post.id} slug=${post.slug} table=public.posts`);
+  console.log(`${logPrefix} insert ok postId=${post.id} slug=${post.slug}`);
 
   return json({
     ok: true,
