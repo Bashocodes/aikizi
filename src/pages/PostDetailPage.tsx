@@ -47,7 +47,9 @@ export function PostDetailPage() {
   const [copiedSref, setCopiedSref] = useState(false);
   const [activeTab, setActiveTab] = useState<'story' | 'motion' | 'dialogue'>('story');
 
-  const postId = id?.split('-')[0];
+  // Extract UUID from URL format: {uuid}-{slug}
+  // UUID format: 8-4-4-4-12 characters (e.g., 99dc0a0b-a886-4fde-bce9-649ac5886a29)
+  const postId = id ? id.split('-').slice(0, 5).join('-') : undefined;
 
   useEffect(() => {
     if (postId) {
