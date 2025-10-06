@@ -133,15 +133,11 @@ export function DecodePage() {
         reader.onerror = reject;
       });
 
-      const [mimePrefix, base64Data] = imageDataUrl.split(',');
-      const mimeType = mimePrefix.match(/:(.*?);/)?.[1] || 'image/jpeg';
-
       abortControllerRef.current = new AbortController();
 
       const response = await api.post('/decode',
         {
-          base64: base64Data,
-          mimeType: mimeType,
+          imageUrl: imageDataUrl,
           model: selectedModel,
         },
         {
@@ -151,7 +147,7 @@ export function DecodePage() {
 
       abortControllerRef.current = null;
 
-      if (!response.success) {
+      if (!response.ok) {
         console.error('[DecodePage] Decode failed', { error: response.error });
 
         if (response.error?.includes('auth required')) {
@@ -172,37 +168,10 @@ export function DecodePage() {
         return;
       }
 
-      if (response.result?.content) {
-        console.log('[DecodePage] Decode success');
-
-        try {
-          const cleaned = response.result.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-          const parsed = JSON.parse(cleaned);
-
-          const normalized = {
-            styleCodes: parsed.styleCodes || [],
-            tags: parsed.tags || [],
-            subjects: parsed.subjects || [],
-            story: parsed.prompts?.story || '',
-            mix: parsed.prompts?.mix || '',
-            expand: parsed.prompts?.expand || '',
-            sound: parsed.prompts?.sound || ''
-          };
-
-          setResult(normalized);
-        } catch (parseError) {
-          setResult({
-            styleCodes: [],
-            tags: [],
-            subjects: [],
-            story: response.result.content,
-            mix: '',
-            expand: '',
-            sound: ''
-          });
-        }
-
-        setSpentTokens(response.result.tokensUsed || 1);
+      if (response.decode?.normalized) {
+        console.log('[DecodePage] POST /v1/decode result: 200 (sync)');
+        setResult(response.decode.normalized);
+        setSpentTokens(response.decode.spentTokens || 1);
         setIsDecoding(false);
         setDecodeStatus('done');
         await refreshTokenBalance();
