@@ -28,6 +28,7 @@ interface JWTPayload {
   aud?: string | string[];
   exp: number;
   iat: number;
+  nbf?: number;
   [key: string]: any;
 }
 
@@ -181,6 +182,10 @@ export async function verifyAccessTokenViaJWKS(
     throw new Error('Token expired');
   }
 
+  if (typeof payload.nbf === 'number' && payload.nbf * 1000 > Date.now()) {
+    throw new Error('Token not yet valid');
+  }
+
   if (!payload.sub) {
     throw new Error('Token missing sub claim');
   }
@@ -204,10 +209,11 @@ export async function verifyAccessTokenViaJWKS(
 
 export class AuthError extends Error {
   constructor(
-    message: string,
-    public statusCode: number = 401
+    public code: string,
+    public statusCode: number = 401,
+    message?: string
   ) {
-    super(message);
+    super(message ?? code);
     this.name = 'AuthError';
   }
 }
@@ -226,14 +232,24 @@ export async function verifyTokenSafe(
   } catch (error: any) {
     console.log(`${logPrefix} jwks=fail reason=${error.message}`);
 
-    if (error.message.includes('expired')) {
-      throw new AuthError('token_expired', 401);
-    } else if (error.message.includes('Invalid')) {
-      throw new AuthError('invalid_token', 401);
-    } else if (error.message.includes('not configured')) {
-      throw new AuthError('server_config_error', 500);
+    const reason = String(error?.message ?? '').toLowerCase();
+
+    if (reason.includes('expired')) {
+      throw new AuthError('TOKEN_EXPIRED', 401, 'Token has expired. Please sign in again.');
     }
 
-    throw new AuthError('auth_failed', 401);
+    if (reason.includes('not yet valid')) {
+      throw new AuthError('TOKEN_NOT_YET_VALID', 419, 'Token is not yet valid. Please try again shortly.');
+    }
+
+    if (reason.includes('invalid')) {
+      throw new AuthError('UNAUTHORIZED', 401, 'Invalid authentication token.');
+    }
+
+    if (reason.includes('not configured')) {
+      throw new AuthError('SERVER_CONFIG_ERROR', 500, 'Authentication service is not configured correctly.');
+    }
+
+    throw new AuthError('UNAUTHORIZED', 401, 'Authentication failed.');
   }
 }

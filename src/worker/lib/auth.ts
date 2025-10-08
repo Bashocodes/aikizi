@@ -16,6 +16,10 @@ export interface AuthResult {
  * Extract and verify JWT from request headers using JWKS
  * This replaces the legacy HS256 verification
  */
+function authFailure(code: string, message: string, status: number): Response {
+  return json({ code, message, status }, status);
+}
+
 export async function requireUser(env: Env, req: Request, reqId?: string): Promise<AuthResult> {
   const logPrefix = reqId ? `[${reqId}] [auth]` : '[auth]';
 
@@ -24,10 +28,7 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
   const m = /^Bearer\s+(.+)$/i.exec(h);
   if (!m) {
     console.log(`${logPrefix} authOutcome=NO_AUTH_HEADER`);
-    throw new Response(JSON.stringify({ error: 'auth_required' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    throw authFailure('UNAUTHORIZED', 'Authorization header is required.', 401);
   }
 
   const token = m[1];
@@ -38,10 +39,7 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
 
     if (!payload.sub) {
       console.log(`${logPrefix} authOutcome=NO_SUB_CLAIM`);
-      throw new Response(JSON.stringify({ error: 'invalid_token' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      throw authFailure('UNAUTHORIZED', 'Token is missing the required subject claim.', 401);
     }
 
     console.log(`${logPrefix} authOutcome=OK userId=${payload.sub}`);
@@ -55,19 +53,22 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
       token
     };
   } catch (error) {
+    if (error instanceof Response) {
+      throw error;
+    }
+
     if (error instanceof AuthError) {
-      console.log(`${logPrefix} authOutcome=${error.message}`);
-      throw new Response(JSON.stringify({ error: error.message }), {
-        status: error.statusCode,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const outcome = error.code === 'TOKEN_EXPIRED'
+        ? 'EXPIRED'
+        : error.code === 'TOKEN_NOT_YET_VALID'
+          ? 'NOT_YET_VALID'
+          : error.code;
+      console.log(`${logPrefix} authOutcome=${outcome} code=${error.code} status=${error.statusCode}`);
+      throw authFailure(error.code ?? 'UNAUTHORIZED', error.message || 'Authentication failed.', error.statusCode ?? 401);
     }
 
     console.log(`${logPrefix} authOutcome=UNEXPECTED_ERROR`);
-    throw new Response(JSON.stringify({ error: 'auth_failed' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    throw authFailure('UNAUTHORIZED', 'Authentication failed.', 401);
   }
 }
 
