@@ -23,7 +23,7 @@ interface Transaction {
 }
 
 export function MePage() {
-  const { user, userRecord, tokenBalanceState, planName, signOut, refreshTokenBalance, authReady } = useAuth();
+  const { user, userRecord, tokenBalance, planName, signOut, refreshTokenBalance, authReady } = useAuth();
   const navigate = useNavigate();
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [bio, setBio] = useState('');
@@ -38,11 +38,6 @@ export function MePage() {
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [nextResetAt, setNextResetAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
-  const lastKnownBalance = tokenBalanceState.lastKnownBalance;
-  const balanceStatus = tokenBalanceState.status;
-  const balanceDisplay = lastKnownBalance !== null ? lastKnownBalance : balanceStatus === 'error' ? '—' : 'Checking…';
-  const refreshingBalance = (balanceStatus === 'loading' || balanceStatus === 'stale') && lastKnownBalance !== null;
 
   useEffect(() => {
     if (authReady && userRecord) {
@@ -402,15 +397,7 @@ export function MePage() {
                   <Coins className="w-5 h-5 text-gray-600 dark:text-gray-400" />
                   <span className="text-sm font-semibold text-gray-600 dark:text-gray-400">Token Balance</span>
                 </div>
-                <div className="flex items-baseline gap-2">
-                  <p className="text-3xl font-bold text-gray-900 dark:text-white">{balanceDisplay}</p>
-                  {refreshingBalance && (
-                    <span className="text-xs text-gray-600 dark:text-gray-400">Refreshing…</span>
-                  )}
-                </div>
-                {lastKnownBalance === null && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Checking balance…</p>
-                )}
+                <p className="text-3xl font-bold text-gray-900 dark:text-white">{tokenBalance}</p>
               </div>
 
               <div className="p-4 bg-gray-100 dark:bg-gray-800 rounded-lg">

@@ -1,22 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { api } from '../lib/api';
 import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X, Copy } from 'lucide-react';
-
-async function generateAttemptUUID(): Promise<string> {
-  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-
-  if (typeof process !== 'undefined' && process.versions?.node) {
-    const { randomUUID } = await import('node:crypto');
-    return randomUUID();
-  }
-
-  throw new Error('randomUUID is not supported in this environment');
-}
 
 interface DecodeResult {
   styleCodes: string[];
@@ -38,7 +25,7 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { userRecord, tokenBalanceState, refreshTokenBalance } = useAuth();
+  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -56,14 +43,8 @@ export function DecodePage() {
   const [spentTokens, setSpentTokens] = useState<number>(0);
   const navigate = useNavigate();
   const abortControllerRef = useRef<AbortController | null>(null);
-  const decodeAttemptRef = useRef<{ key: string | null; hasStarted: boolean }>({ key: null, hasStarted: false });
 
   const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
-  const lastKnownBalance = tokenBalanceState.lastKnownBalance;
-  const balanceStatus = tokenBalanceState.status;
-  const verifiedZero = balanceStatus === 'fresh' && tokenBalanceState.isAuthoritative && lastKnownBalance === 0;
-  const balanceUnknown = lastKnownBalance === null;
-  const refreshingBalance = (balanceStatus === 'loading' || balanceStatus === 'stale') && lastKnownBalance !== null;
 
   useEffect(() => {
     const saved = sessionStorage.getItem('aikizi:model');
@@ -88,28 +69,6 @@ export function DecodePage() {
     };
   }, []);
 
-  const clearDecodeAttemptKey = useCallback(() => {
-    if (decodeAttemptRef.current.key && import.meta.env.DEV) {
-      console.debug('[decode] clearing attempt key', decodeAttemptRef.current.key);
-    }
-    decodeAttemptRef.current = { key: null, hasStarted: false };
-  }, []);
-
-  const ensureDecodeAttemptKey = useCallback(async () => {
-    if (decodeAttemptRef.current.key) {
-      return decodeAttemptRef.current.key;
-    }
-
-    const key = await generateAttemptUUID();
-    decodeAttemptRef.current = { key, hasStarted: false };
-
-    if (import.meta.env.DEV) {
-      console.debug('[decode] generated new attempt key', key);
-    }
-
-    return key;
-  }, []);
-
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -117,7 +76,6 @@ export function DecodePage() {
         alert('File size must be under 25MB');
         return;
       }
-      clearDecodeAttemptKey();
       setSelectedFile(file);
       setPreviewUrl(URL.createObjectURL(file));
       setResult(null);
@@ -139,7 +97,7 @@ export function DecodePage() {
       return;
     }
 
-    if (verifiedZero) {
+    if (tokenBalance < 1) {
       setInsufficientTokens(true);
       return;
     }
@@ -155,37 +113,12 @@ export function DecodePage() {
       abortControllerRef.current = null;
     }
 
-    let attemptKey: string;
-    try {
-      attemptKey = await ensureDecodeAttemptKey();
-    } catch (keyError) {
-      console.error('[DecodePage] Failed to generate idempotency key', keyError);
-      setDecodeError('Unable to start decode. Please refresh and try again.');
-      return;
-    }
-
-    const isRetryAttempt = decodeAttemptRef.current.hasStarted;
-    decodeAttemptRef.current.hasStarted = true;
-
-    if (import.meta.env.DEV) {
-      console.debug('[decode] attempt start', {
-        attemptKey,
-        isRetry: isRetryAttempt,
-        fileName: selectedFile.name,
-        model: selectedModel,
-      });
-    }
-
     setIsDecoding(true);
     setInsufficientTokens(false);
     setDecodeError(null);
     setDecodeStatus('decoding');
 
-    console.log('[DecodePage] Starting decode flow', {
-      tokenBalance: lastKnownBalance,
-      balanceStatus,
-      model: selectedModel,
-    });
+    console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -215,37 +148,24 @@ export function DecodePage() {
         },
         {
           signal: abortControllerRef.current.signal,
-          headers: {
-            'idem-key': attemptKey,
-          },
         }
       );
 
       abortControllerRef.current = null;
 
-      const responseCode = (response as any)?.code as string | undefined;
-      const responseError = ((response as any)?.error ?? (response as any)?.message) as string | undefined;
-      const isWorkerSuccess = (response as any)?.success === true;
+      if (!response.success) {
+        console.error('[DecodePage] Decode failed', { error: response.error });
 
-      if (!isWorkerSuccess) {
-        console.error('[DecodePage] Decode failed', { error: responseError, code: responseCode });
-
-        const isNonRetryableError = Boolean(
-          responseCode && ['INSUFFICIENT_FUNDS', 'IDEMPOTENCY_KEY_INVALID'].includes(responseCode)
-        ) || Boolean(responseError?.includes('invalid input'));
-
-        if (responseError?.includes('auth required')) {
+        if (response.error?.includes('auth required')) {
           setDecodeError('Authorization failed. Please sign out and back in.');
-        } else if (responseCode === 'INSUFFICIENT_FUNDS' || responseError?.includes('insufficient tokens')) {
+        } else if (response.error?.includes('insufficient tokens')) {
           setInsufficientTokens(true);
-        } else if (responseError?.includes('decode timeout')) {
+        } else if (response.error?.includes('decode timeout')) {
           setDecodeError('The model took too long. Please try again.');
-        } else if (responseCode === 'IDEMPOTENCY_KEY_INVALID') {
-          setDecodeError('Session validation failed. Please refresh and try again.');
-        } else if (responseError?.includes('invalid input')) {
+        } else if (response.error?.includes('invalid input')) {
           setDecodeError('Invalid input. Please check your image and try again.');
         } else {
-          setDecodeError(responseError || 'Failed to decode image. Please try again.');
+          setDecodeError(response.error || 'Failed to decode image. Please try again.');
         }
 
         setIsDecoding(false);
@@ -253,10 +173,6 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after decode error...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
-
-        if (isNonRetryableError || responseError?.includes('auth required')) {
-          clearDecodeAttemptKey();
-        }
         return;
       }
 
@@ -296,7 +212,6 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after successful decode...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
-        clearDecodeAttemptKey();
       } else {
         console.error('[DecodePage] Unexpected response format');
         setDecodeError('Unexpected response from server. Please try again.');
@@ -305,14 +220,12 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after unexpected response...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
-        clearDecodeAttemptKey();
       }
     } catch (error: any) {
       console.error('[DecodePage] Error in decode flow:', error);
 
       if (error.name === 'AbortError') {
         console.log('[DecodePage] Decode was aborted by user');
-        clearDecodeAttemptKey();
       } else {
         setDecodeError('Failed to decode image. Please try again.');
       }
@@ -472,22 +385,11 @@ export function DecodePage() {
             Upload an image to extract style codes, subjects, and tokens. Cost: 1 token per decode.
           </p>
           <div className="mt-4 flex items-center gap-4">
-            <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg flex items-baseline gap-3">
-              <div>
-                <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
-                <span className="ml-2 font-bold text-gray-900 dark:text-white">
-                  {lastKnownBalance !== null ? `${lastKnownBalance} tokens` : balanceStatus === 'error' ? '—' : 'Checking…'}
-                </span>
-              </div>
-              {refreshingBalance && (
-                <span className="text-xs text-gray-500 dark:text-gray-400">Refreshing…</span>
-              )}
+            <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg">
+              <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
+              <span className="ml-2 font-bold text-gray-900 dark:text-white">{tokenBalance} tokens</span>
             </div>
           </div>
-
-          {balanceUnknown && (
-            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">Checking balance…</p>
-          )}
 
           {insufficientTokens && (
             <div className="mt-4 backdrop-blur-lg bg-red-50/90 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
@@ -606,7 +508,7 @@ export function DecodePage() {
 
             <button
               onClick={handleDecode}
-              disabled={!selectedFile || !selectedModel || verifiedZero || isDecoding}
+              disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
               className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isDecoding ? (

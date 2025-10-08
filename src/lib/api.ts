@@ -6,7 +6,6 @@ const API_BASE = 'https://aikizi.xyz/v1';
 export interface ApiError {
   ok: false;
   error: string;
-  code?: string;
 }
 
 export interface ApiSuccess {
@@ -90,7 +89,7 @@ export async function apiCall<T = any>(
     if (!response.ok) {
       console.warn('[API] Error response:', { status: response.status, error: data.error, code: data.code });
 
-      if ((response.status === 401 || response.status === 419) && !isRetry) {
+      if (response.status === 401 && !isRetry) {
         console.log('[API] 401 detected, attempting token refresh and retry...');
 
         const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
@@ -104,7 +103,7 @@ export async function apiCall<T = any>(
         return apiCall<T>(endpoint, options, true);
       }
 
-      if (response.status === 401 || response.status === 419) {
+      if (response.status === 401) {
         return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
       }
 

@@ -5,28 +5,11 @@ import { Moon, Sun, Menu, X, Coins } from 'lucide-react';
 import { useState } from 'react';
 
 export function Navigation() {
-  const { user, tokenBalanceState, authReady, signInWithGoogle, signOut } = useAuth();
+  const { user, tokenBalance, authReady, signInWithGoogle, signOut } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-  const balanceValue = tokenBalanceState.lastKnownBalance;
-  const balanceStatus = tokenBalanceState.status;
-  const isRefreshingDisplay =
-    (balanceStatus === 'loading' || balanceStatus === 'stale') && balanceValue !== null;
-  const isErrorDisplay = balanceStatus === 'error' && balanceValue === null;
-  const lowBalance = typeof balanceValue === 'number' && balanceValue < 5;
-  const balanceTitle = balanceValue === null
-    ? (isErrorDisplay ? 'Balance unavailable' : 'Balance updating')
-    : lowBalance
-      ? 'Low Token Balance - Click to Purchase'
-      : 'Token Balance';
-  const renderBalance = () => {
-    if (balanceValue !== null) return balanceValue;
-    if (isErrorDisplay) return '—';
-    return '…';
-  };
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -125,27 +108,22 @@ export function Navigation() {
                 <Link
                   to="/me"
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                    lowBalance
+                    tokenBalance < 5
                       ? 'bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50'
                       : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
                   }`}
-                  title={balanceTitle}
+                  title={tokenBalance < 5 ? 'Low Token Balance - Click to Purchase' : 'Token Balance'}
                 >
                   <Coins className={`w-4 h-4 ${
-                    lowBalance
+                    tokenBalance < 5
                       ? 'text-red-600 dark:text-red-400'
                       : 'text-gray-600 dark:text-gray-400'
                   }`} />
-                  <div className="flex items-baseline gap-1">
-                    <span className={`font-semibold ${
-                      lowBalance
-                        ? 'text-red-900 dark:text-red-100'
-                        : 'text-gray-900 dark:text-white'
-                    }`}>{renderBalance()}</span>
-                    {isRefreshingDisplay && (
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Refreshing…</span>
-                    )}
-                  </div>
+                  <span className={`font-semibold ${
+                    tokenBalance < 5
+                      ? 'text-red-900 dark:text-red-100'
+                      : 'text-gray-900 dark:text-white'
+                  }`}>{tokenBalance}</span>
                 </Link>
               </>
             ) : authReady ? (
@@ -213,28 +191,10 @@ export function Navigation() {
                   <Link
                     to="/me"
                     onClick={() => setMobileMenuOpen(false)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg w-fit ${
-                      lowBalance
-                        ? 'bg-red-100 dark:bg-red-900/30'
-                        : 'bg-gray-100 dark:bg-gray-800'
-                    }`}
-                    title={balanceTitle}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit"
                   >
-                    <Coins className={`w-4 h-4 ${
-                      lowBalance
-                        ? 'text-red-600 dark:text-red-400'
-                        : 'text-gray-600 dark:text-gray-400'
-                    }`} />
-                    <div className="flex items-baseline gap-1">
-                      <span className={`font-semibold ${
-                        lowBalance
-                          ? 'text-red-900 dark:text-red-100'
-                          : 'text-gray-900 dark:text-white'
-                      }`}>{renderBalance()}</span>
-                      {isRefreshingDisplay && (
-                        <span className="text-xs text-gray-500 dark:text-gray-400">Refreshing…</span>
-                      )}
-                    </div>
+                    <Coins className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+                    <span className="font-semibold text-gray-900 dark:text-white">{tokenBalance}</span>
                   </Link>
                 </>
               )}
