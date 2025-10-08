@@ -25,7 +25,7 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
+  const { userRecord, tokenBalanceState, refreshTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -45,6 +45,11 @@ export function DecodePage() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
+  const lastKnownBalance = tokenBalanceState.lastKnownBalance;
+  const balanceStatus = tokenBalanceState.status;
+  const verifiedZero = balanceStatus === 'fresh' && tokenBalanceState.isAuthoritative && lastKnownBalance === 0;
+  const balanceUnknown = lastKnownBalance === null;
+  const refreshingBalance = (balanceStatus === 'loading' || balanceStatus === 'stale') && lastKnownBalance !== null;
 
   useEffect(() => {
     const saved = sessionStorage.getItem('aikizi:model');
@@ -97,7 +102,7 @@ export function DecodePage() {
       return;
     }
 
-    if (tokenBalance < 1) {
+    if (verifiedZero) {
       setInsufficientTokens(true);
       return;
     }
@@ -118,7 +123,11 @@ export function DecodePage() {
     setDecodeError(null);
     setDecodeStatus('decoding');
 
-    console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
+    console.log('[DecodePage] Starting decode flow', {
+      tokenBalance: lastKnownBalance,
+      balanceStatus,
+      model: selectedModel,
+    });
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -385,11 +394,22 @@ export function DecodePage() {
             Upload an image to extract style codes, subjects, and tokens. Cost: 1 token per decode.
           </p>
           <div className="mt-4 flex items-center gap-4">
-            <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg">
-              <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
-              <span className="ml-2 font-bold text-gray-900 dark:text-white">{tokenBalance} tokens</span>
+            <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg flex items-baseline gap-3">
+              <div>
+                <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
+                <span className="ml-2 font-bold text-gray-900 dark:text-white">
+                  {lastKnownBalance !== null ? `${lastKnownBalance} tokens` : balanceStatus === 'error' ? '—' : 'Checking…'}
+                </span>
+              </div>
+              {refreshingBalance && (
+                <span className="text-xs text-gray-500 dark:text-gray-400">Refreshing…</span>
+              )}
             </div>
           </div>
+
+          {balanceUnknown && (
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">Checking balance…</p>
+          )}
 
           {insufficientTokens && (
             <div className="mt-4 backdrop-blur-lg bg-red-50/90 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg p-4 flex items-start gap-3">
@@ -508,7 +528,7 @@ export function DecodePage() {
 
             <button
               onClick={handleDecode}
-              disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
+              disabled={!selectedFile || !selectedModel || verifiedZero || isDecoding}
               className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isDecoding ? (

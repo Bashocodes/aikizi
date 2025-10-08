@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useRef, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useRef, ReactNode, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { api, setAuthReady as notifyApiAuthReady } from '../lib/api';
@@ -10,17 +10,30 @@ interface UserRecord {
   created_at: string;
 }
 
+type TokenBalanceStatus = 'idle' | 'loading' | 'fresh' | 'stale' | 'error';
+
+interface TokenBalanceState {
+  lastKnownBalance: number | null;
+  status: TokenBalanceStatus;
+  updatedAt: number;
+  isAuthoritative: boolean;
+}
+
 interface AuthContextType {
   user: User | null;
   userRecord: UserRecord | null;
   session: Session | null;
-  tokenBalance: number;
+  tokenBalance: number | null;
+  tokensBalance: number | null;
+  tokenBalanceState: TokenBalanceState;
+  status: TokenBalanceStatus;
+  isAuthoritative: boolean;
   planName: string;
   authReady: boolean;
   isRefreshingBalance: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
-  refreshTokenBalance: () => Promise<void>;
+  refreshTokenBalance: (forceRefresh?: boolean) => Promise<void>;
 }
 
 let toastTimeout: NodeJS.Timeout | null = null;
@@ -59,11 +72,18 @@ export async function getAccessToken(): Promise<string | null> {
   }
 }
 
+const createDefaultBalanceState = (): TokenBalanceState => ({
+  lastKnownBalance: null,
+  status: 'idle',
+  updatedAt: 0,
+  isAuthoritative: false,
+});
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [tokenBalance, setTokenBalance] = useState(0);
+  const [tokenBalanceState, setTokenBalanceState] = useState<TokenBalanceState>(createDefaultBalanceState);
   const [planName, setPlanName] = useState('free');
   const [authReady, setAuthReady] = useState(false);
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
@@ -71,6 +91,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const processingSessionRef = useRef<string | null>(null);
   const lastEventTimeRef = useRef<number>(0);
   const lastBalanceFetchRef = useRef<number>(0);
+  const balanceStateRef = useRef<TokenBalanceState>(createDefaultBalanceState());
+  const lastVisibilityOrFocusTriggerRef = useRef<number>(0);
 
   const ensureAccount = async (userId: string, retryCount = 0): Promise<boolean> => {
     const cacheKey = `ensure:${userId}`;
@@ -134,85 +156,186 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data;
   };
 
-  const fetchTokenBalance = async (retryCount = 0, forceRefresh = false): Promise<{ tokens_balance: number; plan_name: string }> => {
+  const fetchTokenBalance = useCallback(async (
+    options: { forceRefresh?: boolean; allowRetry?: boolean } = {}
+  ): Promise<boolean> => {
+    const { forceRefresh = false, allowRetry = true } = options;
+    let allowSessionRetry = allowRetry;
     const now = Date.now();
     if (!forceRefresh && now - lastBalanceFetchRef.current < 10000) {
-      console.log('[Auth] Balance fetch debounced (< 10s since last fetch)');
-      return { tokens_balance: tokenBalance, plan_name: planName };
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Auth] Balance fetch debounced (< 10s since last fetch)');
+      }
+      return false;
     }
     lastBalanceFetchRef.current = now;
-    console.log('[Auth] Fetching balance (forceRefresh=' + forceRefresh + ')...');
+
+    setTokenBalanceState(prev => ({
+      ...prev,
+      status: 'loading',
+    }));
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        console.warn('[Auth] No session available for get_balance');
-        return { tokens_balance: 0, plan_name: 'free' };
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      if (!currentSession?.access_token) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[Auth] Balance fetch fallback: no Supabase session');
+        }
+        setTokenBalanceState(prev => ({
+          ...prev,
+          status: 'stale',
+          isAuthoritative: false,
+        }));
+        return false;
       }
 
-      const response = await api.get('/balance');
+      let response = await api.get('/balance');
 
       if (!response.ok) {
-        console.warn('[Auth] get_balance endpoint error:', { error: response.error, retryCount });
+        const errorMessage = response.error || 'Unknown balance error';
+        const lowerError = errorMessage.toLowerCase();
+        const requiresRefresh = allowSessionRetry && (
+          response.code === 'TOKEN_EXPIRED' ||
+          response.code === 'TOKEN_NOT_YET_VALID' ||
+          lowerError.includes('status 401') ||
+          lowerError.includes('status 419')
+        );
 
-        if (retryCount < 2) {
-          console.log(`[Auth] Retrying balance fetch (attempt ${retryCount + 1}/2) in 2s...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          return fetchTokenBalance(retryCount + 1);
+        if (requiresRefresh) {
+          const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError && refreshed.session) {
+            if (process.env.NODE_ENV !== 'production') {
+              console.debug('[Auth] Session refreshed after balance error; retrying');
+            }
+            allowSessionRetry = false;
+            response = await api.get('/balance');
+          }
         }
 
-        return { tokens_balance: 0, plan_name: 'free' };
+        if (!response.ok) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('[Auth] Balance fetch fallback: API error', {
+              error: response.error,
+              code: (response as any).code,
+            });
+          }
+          setTokenBalanceState(prev => ({
+            ...prev,
+            status: response.error ? 'error' : 'stale',
+            isAuthoritative: false,
+          }));
+          return false;
+        }
       }
 
-      const balance = response.balance ?? 0;
-      console.log('[Auth] Balance fetched', { balance });
+      const payload = response as Record<string, any>;
+      const rawBalance = payload.balance ?? payload.tokens_balance;
+      const balanceValue = typeof rawBalance === 'number' ? rawBalance : null;
+      const updatedAt = Date.now();
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.id) {
+      setTokenBalanceState(prev => ({
+        lastKnownBalance: balanceValue ?? prev.lastKnownBalance,
+        status: 'fresh',
+        updatedAt,
+        isAuthoritative: true,
+      }));
+
+      let resolvedPlanName = typeof payload.plan_name === 'string' ? payload.plan_name : null;
+
+      if (!resolvedPlanName && currentSession.user?.id) {
         const { data, error } = await supabase
           .from('entitlements')
           .select(`
             user_id,
             plans (name)
           `)
-          .eq('user_id', user.id)
+          .eq('user_id', currentSession.user.id)
           .maybeSingle();
 
         if (error) {
           console.error('[Auth] Error fetching plan name:', error);
         }
 
-        return {
-          tokens_balance: balance,
-          plan_name: (data as any)?.plans?.name || 'free'
-        };
+        resolvedPlanName = (data as any)?.plans?.name || null;
       }
 
-      return {
-        tokens_balance: balance,
-        plan_name: 'free'
-      };
+      setPlanName(prev => resolvedPlanName || prev || 'free');
+
+      return balanceValue !== null;
     } catch (err) {
       console.error('[Auth] Unexpected error fetching token balance:', err);
-      return { tokens_balance: 0, plan_name: 'free' };
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Auth] Balance fetch fallback: unexpected error');
+      }
+      setTokenBalanceState(prev => ({
+        ...prev,
+        status: 'error',
+        isAuthoritative: false,
+      }));
+      return false;
     }
-  };
+  }, []);
 
-  const refreshTokenBalance = async (forceRefresh = false) => {
+  const refreshTokenBalance = useCallback(async (forceRefresh = false) => {
     setIsRefreshingBalance(true);
 
     try {
-      lastBalanceFetchRef.current = 0;
-      const balance = await fetchTokenBalance(0, true);
-      setTokenBalance(balance.tokens_balance);
-      setPlanName(balance.plan_name);
-      console.log('[Auth] Token balance refreshed:', balance.tokens_balance);
+      if (forceRefresh) {
+        lastBalanceFetchRef.current = 0;
+      }
+      await fetchTokenBalance({ forceRefresh });
     } catch (err) {
       console.error('[Auth] Error refreshing token balance:', err);
     } finally {
       setIsRefreshingBalance(false);
     }
-  };
+  }, [fetchTokenBalance]);
+
+  useEffect(() => {
+    balanceStateRef.current = tokenBalanceState;
+  }, [tokenBalanceState]);
+
+  useEffect(() => {
+    const triggerRefresh = (reason: string) => {
+      const now = Date.now();
+      if (now - lastVisibilityOrFocusTriggerRef.current < 300) {
+        return;
+      }
+      lastVisibilityOrFocusTriggerRef.current = now;
+      const state = balanceStateRef.current;
+      const staleForLong = state.status === 'stale' && state.updatedAt > 0 && now - state.updatedAt > 10000;
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug(`[Auth] ${reason} -> refreshing balance`, {
+          lastKnownBalance: state.lastKnownBalance,
+          status: state.status,
+          staleForLong,
+        });
+      }
+      refreshTokenBalance(true);
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        triggerRefresh('visibilitychange');
+      }
+    };
+
+    const handleWindowFocus = () => {
+      triggerRefresh('focus');
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshTokenBalance]);
+
+  const tokensBalance = tokenBalanceState.lastKnownBalance;
+  const balanceStatus = tokenBalanceState.status;
+  const isBalanceAuthoritative = tokenBalanceState.isAuthoritative;
 
   const signInWithGoogle = async () => {
     const currentPath = window.location.pathname + window.location.search;
@@ -242,8 +365,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setUserRecord(null);
     setSession(null);
-    setTokenBalance(0);
+    const resetState = createDefaultBalanceState();
+    setTokenBalanceState(resetState);
+    balanceStateRef.current = resetState;
     setPlanName('free');
+    lastBalanceFetchRef.current = 0;
   };
 
   useEffect(() => {
@@ -277,11 +403,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!isMounted) return;
           setUserRecord(userData);
 
-          const balance = await fetchTokenBalance();
+          await fetchTokenBalance();
           if (!isMounted) return;
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-          console.log('[Auth] Initial balance loaded:', balance.tokens_balance);
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('[Auth] Initial balance load complete', {
+              balance: balanceStateRef.current.lastKnownBalance,
+              status: balanceStateRef.current.status,
+            });
+          }
         })();
       }
     };
@@ -323,16 +452,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!isMounted) return;
           setUserRecord(userData);
 
-          const balance = await fetchTokenBalance();
+          await fetchTokenBalance();
           if (!isMounted) return;
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-          console.log('[Auth] Balance updated:', balance.tokens_balance);
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('[Auth] Balance updated via onAuthStateChange', {
+              balance: balanceStateRef.current.lastKnownBalance,
+              status: balanceStateRef.current.status,
+            });
+          }
         })();
       } else {
         setUserRecord(null);
-        setTokenBalance(0);
+        const resetState = createDefaultBalanceState();
+        setTokenBalanceState(resetState);
+        balanceStateRef.current = resetState;
         setPlanName('free');
+        lastBalanceFetchRef.current = 0;
       }
     });
 
@@ -348,7 +483,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         userRecord,
         session,
-        tokenBalance,
+        tokenBalance: tokensBalance,
+        tokensBalance,
+        tokenBalanceState,
+        status: balanceStatus,
+        isAuthoritative: isBalanceAuthoritative,
         planName,
         authReady,
         isRefreshingBalance,
