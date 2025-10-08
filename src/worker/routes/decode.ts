@@ -15,13 +15,34 @@ type Body = {
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 const DECODE_TIMEOUT_MS = 50000;
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const IDEM_KEY_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function withDecodeHeaders(res: Response): Response {
+  const corsRes = cors(res);
+  const headers = new Headers(corsRes.headers);
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Expires', '0');
+
+  const vary = headers.get('Vary');
+  if (vary) {
+    const parts = vary.split(',').map((part) => part.trim()).filter(Boolean);
+    if (!parts.includes('Authorization')) {
+      parts.push('Authorization');
+      headers.set('Vary', parts.join(', '));
+    }
+  } else {
+    headers.set('Vary', 'Authorization');
+  }
+
+  return new Response(corsRes.body, { status: corsRes.status, headers });
+}
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
 
   if (req.method === 'OPTIONS') {
-    return cors(new Response(null, { status: 200 }));
+    return withDecodeHeaders(new Response(null, { status: 200 }));
   }
 
   let authResult;
@@ -30,9 +51,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     console.log(`${logPrefix} User authenticated`);
   } catch (error) {
     if (error instanceof Response) {
-      return cors(error);
+      return withDecodeHeaders(error);
     }
-    return cors(json({ success: false, error: 'auth required' }, 401));
+    return withDecodeHeaders(json({ success: false, error: 'auth required' }, 401));
   }
 
   const dbClient = supa(env, authResult.token);
@@ -42,7 +63,7 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   if (!userData) {
     console.log(`${logPrefix} User not found in DB: auth_id=${authResult.user.id}`);
-    return cors(json({ success: false, error: 'auth required' }, 401));
+    return withDecodeHeaders(json({ success: false, error: 'auth required' }, 401));
   }
 
   const userId = userData.id;
@@ -57,20 +78,19 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   if (!entitlementData || entitlementData.tokens_balance < 1) {
     console.log(`${logPrefix} Insufficient tokens: user_id=${userId} balance=${entitlementData?.tokens_balance ?? 'null'}`);
-    return cors(json({ success: false, error: 'insufficient tokens' }, 402));
+    return withDecodeHeaders(json({ success: false, error: 'insufficient tokens' }, 402));
   }
 
   const oldBalance = entitlementData.tokens_balance;
 
   const idemKeyValue = idemKey(req);
-  if (!idemKeyValue || !UUID_REGEX.test(idemKeyValue)) {
+  if (!idemKeyValue || !IDEM_KEY_V4_REGEX.test(idemKeyValue)) {
     console.log(`${logPrefix} Invalid idempotency key`, { attemptId: idemKeyValue || 'missing', userId });
-    return cors(json({
-      success: false,
-      error: 'idem key must be a UUID',
-      message: 'idem key must be a UUID',
+    const status = 400;
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue || 'missing', userId, outcome: 'spend:idem_key_invalid' }));
+    return withDecodeHeaders(json({
       code: 'IDEMPOTENCY_KEY_INVALID'
-    }, 400));
+    }, status));
   }
 
   console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${oldBalance - 1}`, {
@@ -79,32 +99,39 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:start' }));
 
   // Use spend_tokens RPC function (SECURITY DEFINER)
-  const { data: spendResult, error: spendError } = await dbClient.rpc('spend_tokens', {
-    p_cost: 1,
-    p_idem_key: idemKeyValue
-  });
+  let spendResult;
+  try {
+    const { data, error } = await dbClient.rpc('spend_tokens', {
+      p_cost: 1,
+      p_idem_key: idemKeyValue
+    });
 
-  if (spendError) {
-    const errorMessage = spendError.message || '';
-    const isInsufficient = errorMessage.includes('insufficient');
-    console.error(`${logPrefix} Failed to spend token: user_id=${userId} attemptId=${idemKeyValue} error=${errorMessage}`);
-    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:error' }));
-
-    if (isInsufficient) {
-      return cors(json({
-        success: false,
-        error: 'insufficient tokens',
-        message: 'insufficient tokens',
-        code: 'INSUFFICIENT_FUNDS'
-      }, 402));
+    if (error) {
+      throw error;
     }
 
-    return cors(json({
-      success: false,
-      error: 'Server misconfiguration',
-      message: 'Server misconfiguration',
-      code: 'SERVER_MISCONFIG'
-    }, 500));
+    spendResult = data;
+  } catch (err: any) {
+    const errorMessage = err?.message || '';
+    const errorCode = err?.code;
+    let status = 500;
+    let body: Record<string, string | boolean> = { success: false, code: 'UNKNOWN', message: 'Unexpected error' };
+
+    if (errorMessage.includes('INSUFFICIENT_FUNDS') || errorCode === 'INSUFFICIENT_FUNDS') {
+      status = 402;
+      body = { success: false, code: 'INSUFFICIENT_FUNDS', message: 'Not enough tokens' };
+    } else if (errorMessage.includes('invalid input syntax for type uuid') || errorCode === 'IDEMPOTENCY_KEY_INVALID') {
+      status = 400;
+      body = { success: false, code: 'IDEMPOTENCY_KEY_INVALID', message: 'Idempotency key must be a UUID' };
+    } else if (errorMessage.includes('could not find function') || errorCode === 'SERVER_MISCONFIG') {
+      status = 500;
+      body = { success: false, code: 'SERVER_MISCONFIG', message: 'Server misconfiguration' };
+    }
+
+    console.error(`${logPrefix} Failed to spend token: user_id=${userId} attemptId=${idemKeyValue} error=${errorMessage} status=${status}`);
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:error' }));
+
+    return withDecodeHeaders(json(body, status));
   }
 
   const newBalance = spendResult?.[0]?.balance ?? (oldBalance - 1);
@@ -119,8 +146,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   } catch (e) {
     console.log(`${logPrefix} Invalid JSON`);
     await refundToken(dbClient, userData.id, logPrefix);
-    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_json' }));
-    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
+    const status = 422;
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_json' }));
+    return withDecodeHeaders(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, status));
   }
 
   const hasBase64 = body?.base64 && body?.mimeType;
@@ -129,8 +157,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   if (!hasBase64 && !hasImageUrl) {
     console.log(`${logPrefix} Missing image data`);
     await refundToken(dbClient, userData.id, logPrefix);
-    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_payload' }));
-    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
+    const status = 422;
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_payload' }));
+    return withDecodeHeaders(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, status));
   }
 
   const defaultModel = 'gemini-2.5-flash';
@@ -139,8 +168,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   if (!ALLOWED_MODELS.includes(model)) {
     console.log(`${logPrefix} Invalid model: ${model}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_model' }));
-    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
+    const status = 422;
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_model' }));
+    return withDecodeHeaders(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, status));
   }
 
   console.log(`${logPrefix} Starting decode model=${model}`);
@@ -197,13 +227,14 @@ Return ONLY valid JSON, no markdown formatting.`;
         const ms = Date.now() - startTime;
         console.log(`${logPrefix} Timeout ms=${ms}`);
         await refundToken(dbClient, userData.id, logPrefix);
-        console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:timeout' }));
-        return cors(json({
+        const status = 504;
+        console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:timeout' }));
+        return withDecodeHeaders(json({
           success: false,
           error: 'decode timeout',
           message: 'decode timeout',
           code: 'DECODE_TIMEOUT'
-        }, 504));
+        }, status));
       }
       throw error;
     }
@@ -211,18 +242,19 @@ Return ONLY valid JSON, no markdown formatting.`;
     const ms = Date.now() - startTime;
     console.error(`${logPrefix} Provider error ms=${ms}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:error' }));
-    return cors(json({
+    const status = 500;
+    console.log(`${logPrefix} telemetry status=${status}`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:error' }));
+    return withDecodeHeaders(json({
       success: false,
       error: 'Server misconfiguration',
       message: 'Server misconfiguration',
       code: 'SERVER_MISCONFIG'
-    }, 500));
+    }, status));
   }
 
   const ms = Date.now() - startTime;
   console.log(`${logPrefix} Success ms=${ms}`);
-  console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:ok', ms }));
+  console.log(`${logPrefix} telemetry status=200`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:ok', ms }));
 
   await dbClient.from('decodes').insert({
     user_id: userData.id,
@@ -234,7 +266,7 @@ Return ONLY valid JSON, no markdown formatting.`;
     private: true
   });
 
-  return cors(json({
+  return withDecodeHeaders(json({
     success: true,
     result: {
       content: text,
