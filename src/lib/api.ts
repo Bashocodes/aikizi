@@ -89,22 +89,35 @@ export async function apiCall<T = any>(
     if (!response.ok) {
       console.warn('[API] Error response:', { status: response.status, error: data.error, code: data.code });
 
-      if (response.status === 401 && !isRetry) {
-        console.log('[API] 401 detected, attempting token refresh and retry...');
+      if ((response.status === 401 || response.status === 419) && !isRetry) {
+        if (data.code === 'TOKEN_EXPIRED' || data.error === 'TOKEN_EXPIRED') {
+          console.log('[API] TOKEN_EXPIRED detected, attempting token refresh and retry...');
 
+          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+
+          if (refreshError || !refreshData.session) {
+            console.error('[API] Token refresh failed:', refreshError);
+            return { ok: false, error: 'Authorization failed. Please sign out and back in.', code: 'TOKEN_EXPIRED' };
+          }
+
+          console.log('[API] Token refreshed successfully, retrying request...');
+          return apiCall<T>(endpoint, options, true);
+        }
+
+        console.log('[API] 401/419 detected (non-expired), attempting token refresh and retry...');
         const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
 
         if (refreshError || !refreshData.session) {
           console.error('[API] Token refresh failed:', refreshError);
-          return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
+          return { ok: false, error: 'Authorization failed. Please sign out and back in.', code: data.code };
         }
 
         console.log('[API] Token refreshed successfully, retrying request...');
         return apiCall<T>(endpoint, options, true);
       }
 
-      if (response.status === 401) {
-        return { ok: false, error: 'Authorization failed. Please sign out and back in.' };
+      if (response.status === 401 || response.status === 419) {
+        return { ok: false, error: 'Authorization failed. Please sign out and back in.', code: data.code || 'AUTH_FAILED' };
       }
 
       if (response.status === 504) {

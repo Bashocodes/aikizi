@@ -25,7 +25,7 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
+  const { userRecord, tokenBalance, refreshTokenBalance, isConnectionError } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -388,6 +388,9 @@ export function DecodePage() {
             <div className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg">
               <span className="text-sm text-gray-600 dark:text-gray-400">Your Balance:</span>
               <span className="ml-2 font-bold text-gray-900 dark:text-white">{tokenBalance} tokens</span>
+              {isConnectionError && (
+                <span className="ml-2 text-xs text-yellow-600 dark:text-yellow-400 font-medium">Reconnecting...</span>
+              )}
             </div>
           </div>
 
@@ -508,7 +511,7 @@ export function DecodePage() {
 
             <button
               onClick={handleDecode}
-              disabled={!selectedFile || !selectedModel || tokenBalance < 1 || isDecoding}
+              disabled={!selectedFile || !selectedModel || (tokenBalance < 1 && !isConnectionError) || isDecoding || isConnectionError}
               className="w-full py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-bold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isDecoding ? (
@@ -530,6 +533,17 @@ export function DecodePage() {
                   <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-900 dark:border-white"></div>
                   <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
                     Decoding...
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {isConnectionError && !isDecoding && (
+              <div className="backdrop-blur-lg bg-yellow-50/70 dark:bg-yellow-900/30 rounded-xl p-4 border border-yellow-200 dark:border-yellow-700">
+                <div className="flex items-center gap-3">
+                  <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
+                  <span className="text-sm font-semibold text-yellow-800 dark:text-yellow-200">
+                    Reconnecting to server... Your balance will update shortly.
                   </span>
                 </div>
               </div>
