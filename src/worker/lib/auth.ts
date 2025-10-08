@@ -44,6 +44,8 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
       });
     }
 
+    console.log(`${logPrefix} authOutcome=OK userId=${payload.sub}`);
+
     return {
       user: {
         id: payload.sub,
@@ -54,14 +56,15 @@ export async function requireUser(env: Env, req: Request, reqId?: string): Promi
     };
   } catch (error) {
     if (error instanceof AuthError) {
-      throw new Response(JSON.stringify({ error: error.message, code: error.message }), {
+      console.log(`${logPrefix} authOutcome=${error.message}`);
+      throw new Response(JSON.stringify({ error: error.message }), {
         status: error.statusCode,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
     console.log(`${logPrefix} authOutcome=UNEXPECTED_ERROR`);
-    throw new Response(JSON.stringify({ error: 'auth_failed', code: 'AUTH_FAILED' }), {
+    throw new Response(JSON.stringify({ error: 'auth_failed' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' }
     });

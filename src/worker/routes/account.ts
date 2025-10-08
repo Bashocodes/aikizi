@@ -234,9 +234,5 @@ export async function balance(env: Env, req: Request, reqId?: string) {
   console.log(`${logPrefix} [balance] Query result: user_id=${userId} balance=${ent?.tokens_balance ?? 'null'} error=${error?.message ?? 'none'}`);
 
   const balance = ent?.tokens_balance ?? 0;
-  const response = cors(json({ ok: true, balance }));
-  const headers = new Headers(response.headers);
-  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-  headers.set('Vary', 'Authorization');
-  return new Response(response.body, { status: response.status, headers });
+  return cors(json({ ok: true, balance }));
 }

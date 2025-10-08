@@ -18,7 +18,6 @@ interface AuthContextType {
   planName: string;
   authReady: boolean;
   isRefreshingBalance: boolean;
-  isConnectionError: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshTokenBalance: () => Promise<void>;
@@ -65,11 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [tokenBalance, setTokenBalance] = useState(0);
-  const [lastKnownBalance, setLastKnownBalance] = useState(0);
   const [planName, setPlanName] = useState('free');
   const [authReady, setAuthReady] = useState(false);
   const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
-  const [isConnectionError, setIsConnectionError] = useState(false);
 
   const processingSessionRef = useRef<string | null>(null);
   const lastEventTimeRef = useRef<number>(0);
@@ -149,21 +146,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
-        console.warn('[Auth] No session available for get_balance - preserving last known balance');
-        setIsConnectionError(true);
-        return { tokens_balance: lastKnownBalance, plan_name: planName };
+        console.warn('[Auth] No session available for get_balance');
+        return { tokens_balance: 0, plan_name: 'free' };
       }
 
       const response = await api.get('/balance');
 
       if (!response.ok) {
-        console.warn('[Auth] get_balance endpoint error:', { error: response.error, code: response.code, retryCount });
-
-        if (response.code === 'TOKEN_EXPIRED' || response.error?.includes('Authorization failed')) {
-          console.log('[Auth] Token expired or auth failed - preserving last known balance');
-          setIsConnectionError(true);
-          return { tokens_balance: lastKnownBalance, plan_name: planName };
-        }
+        console.warn('[Auth] get_balance endpoint error:', { error: response.error, retryCount });
 
         if (retryCount < 2) {
           console.log(`[Auth] Retrying balance fetch (attempt ${retryCount + 1}/2) in 2s...`);
@@ -171,15 +161,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return fetchTokenBalance(retryCount + 1);
         }
 
-        console.log('[Auth] Balance fetch failed after retries - preserving last known balance');
-        setIsConnectionError(true);
-        return { tokens_balance: lastKnownBalance, plan_name: planName };
+        return { tokens_balance: 0, plan_name: 'free' };
       }
 
       const balance = response.balance ?? 0;
-      console.log('[Auth] Balance fetched successfully', { balance });
-      setIsConnectionError(false);
-      setLastKnownBalance(balance);
+      console.log('[Auth] Balance fetched', { balance });
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.id) {
@@ -208,8 +194,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     } catch (err) {
       console.error('[Auth] Unexpected error fetching token balance:', err);
-      setIsConnectionError(true);
-      return { tokens_balance: lastKnownBalance, plan_name: planName };
+      return { tokens_balance: 0, plan_name: 'free' };
     }
   };
 
@@ -258,9 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserRecord(null);
     setSession(null);
     setTokenBalance(0);
-    setLastKnownBalance(0);
     setPlanName('free');
-    setIsConnectionError(false);
   };
 
   useEffect(() => {
@@ -340,79 +323,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!isMounted) return;
           setUserRecord(userData);
 
-          if (event === 'TOKEN_REFRESHED') {
-            console.log('[Auth] TOKEN_REFRESHED event - fetching fresh balance');
-            lastBalanceFetchRef.current = 0;
-          }
-
           const balance = await fetchTokenBalance();
           if (!isMounted) return;
           setTokenBalance(balance.tokens_balance);
           setPlanName(balance.plan_name);
-          console.log('[Auth] Balance updated:', balance.tokens_balance, 'event:', event);
+          console.log('[Auth] Balance updated:', balance.tokens_balance);
         })();
       } else {
         setUserRecord(null);
         setTokenBalance(0);
-        setLastKnownBalance(0);
         setPlanName('free');
-        setIsConnectionError(false);
       }
     });
-
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible' && session?.user) {
-        console.log('[Auth] Tab became visible - refreshing session and balance');
-        const { data: { session: refreshedSession }, error } = await supabase.auth.refreshSession();
-        if (!error && refreshedSession) {
-          console.log('[Auth] Session refreshed on visibility change');
-          if (isMounted) {
-            lastBalanceFetchRef.current = 0;
-            const balance = await fetchTokenBalance(0, true);
-            setTokenBalance(balance.tokens_balance);
-            setPlanName(balance.plan_name);
-          }
-        }
-      }
-    };
-
-    const handleOnlineOffline = async () => {
-      if (navigator.onLine && session?.user) {
-        console.log('[Auth] Network came back online - refreshing session and balance');
-        const { data: { session: refreshedSession }, error } = await supabase.auth.refreshSession();
-        if (!error && refreshedSession && isMounted) {
-          lastBalanceFetchRef.current = 0;
-          const balance = await fetchTokenBalance(0, true);
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('online', handleOnlineOffline);
-
-    const intervalId = setInterval(async () => {
-      if (session?.user) {
-        console.log('[Auth] 15-minute interval - proactive session refresh');
-        const { data: { session: refreshedSession }, error } = await supabase.auth.refreshSession();
-        if (!error && refreshedSession && isMounted) {
-          console.log('[Auth] Session refreshed on interval');
-          const balance = await fetchTokenBalance(0, true);
-          setTokenBalance(balance.tokens_balance);
-          setPlanName(balance.plan_name);
-        }
-      }
-    }, 15 * 60 * 1000);
 
     return () => {
       isMounted = false;
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('online', handleOnlineOffline);
-      clearInterval(intervalId);
     };
-  }, [session]);
+  }, []);
 
   return (
     <AuthContext.Provider
@@ -424,7 +352,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         planName,
         authReady,
         isRefreshingBalance,
-        isConnectionError,
         signInWithGoogle,
         signOut,
         refreshTokenBalance,

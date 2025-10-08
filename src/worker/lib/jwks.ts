@@ -177,15 +177,8 @@ export async function verifyAccessTokenViaJWKS(
     throw new Error(`Invalid issuer: expected ${env.SUPABASE_JWT_ISSUER}, got ${payload.iss}`);
   }
 
-  const now = Date.now();
-  const nowSeconds = Math.floor(now / 1000);
-
-  if (payload.exp && payload.exp < nowSeconds) {
+  if (payload.exp && payload.exp * 1000 < Date.now()) {
     throw new Error('Token expired');
-  }
-
-  if (payload.nbf && payload.nbf > nowSeconds) {
-    throw new Error('Token not yet valid');
   }
 
   if (!payload.sub) {
@@ -228,47 +221,19 @@ export async function verifyTokenSafe(
 
   try {
     const payload = await verifyAccessTokenViaJWKS(token, env);
-    const parts = token.split('.');
-    let kid = 'unknown';
-    try {
-      const headerJson = new TextDecoder().decode(base64UrlDecode(parts[0]));
-      const header = JSON.parse(headerJson);
-      kid = header.kid || 'unknown';
-    } catch (e) {
-      // ignore
-    }
-    console.log(`${logPrefix} authOutcome=OK sub=${payload.sub} kid=${kid} exp=${payload.exp}`);
+    console.log(`${logPrefix} jwks=ok sub=${payload.sub}`);
     return payload;
   } catch (error: any) {
-    const parts = token.split('.');
-    let kid = 'unknown';
-    let sub = 'unknown';
-    try {
-      const headerJson = new TextDecoder().decode(base64UrlDecode(parts[0]));
-      const header = JSON.parse(headerJson);
-      kid = header.kid || 'unknown';
-      const payloadJson = new TextDecoder().decode(base64UrlDecode(parts[1]));
-      const payload = JSON.parse(payloadJson);
-      sub = payload.sub || 'unknown';
-    } catch (e) {
-      // ignore parse errors for logging
-    }
+    console.log(`${logPrefix} jwks=fail reason=${error.message}`);
 
     if (error.message.includes('expired')) {
-      console.log(`${logPrefix} authOutcome=EXPIRED sub=${sub} kid=${kid}`);
-      throw new AuthError('TOKEN_EXPIRED', 419);
-    } else if (error.message.includes('not yet valid')) {
-      console.log(`${logPrefix} authOutcome=NOT_YET_VALID sub=${sub} kid=${kid}`);
-      throw new AuthError('TOKEN_NOT_YET_VALID', 401);
+      throw new AuthError('token_expired', 401);
     } else if (error.message.includes('Invalid')) {
-      console.log(`${logPrefix} authOutcome=INVALID sub=${sub} kid=${kid}`);
       throw new AuthError('invalid_token', 401);
     } else if (error.message.includes('not configured')) {
-      console.log(`${logPrefix} authOutcome=CONFIG_ERROR`);
       throw new AuthError('server_config_error', 500);
     }
 
-    console.log(`${logPrefix} authOutcome=FAILED sub=${sub} kid=${kid} reason=${error.message}`);
     throw new AuthError('auth_failed', 401);
   }
 }
