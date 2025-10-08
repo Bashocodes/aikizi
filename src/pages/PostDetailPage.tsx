@@ -39,7 +39,7 @@ interface PostDetail {
 
 export function PostDetailPage() {
   const { id } = useParams();
-  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
+  const { userRecord, tokenBalanceState, refreshTokenBalance } = useAuth();
   const [post, setPost] = useState<PostDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [srefUnlocked, setSrefUnlocked] = useState(false);
@@ -166,7 +166,9 @@ export function PostDetailPage() {
       return;
     }
 
-    if (tokenBalance < post.sref_codes.price_tokens) {
+    const price = post.sref_codes.price_tokens;
+    const hasAuthoritativeBalance = tokenBalanceState.isAuthoritative && tokenBalanceState.status === 'fresh';
+    if (hasAuthoritativeBalance && (tokenBalanceState.lastKnownBalance ?? 0) < price) {
       alert('Insufficient tokens');
       return;
     }
