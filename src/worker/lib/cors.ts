@@ -1,6 +1,6 @@
 const ALLOWED_ORIGINS = ['https://aikizi.xyz', 'https://www.aikizi.xyz'];
 const ALLOWED_METHODS = ['GET', 'POST', 'OPTIONS'];
-const ALLOWED_HEADERS = ['Authorization', 'Content-Type'];
+const ALLOWED_HEADERS = ['Authorization', 'Content-Type', 'idem-key'];
 
 function mergeVary(existing: string | null, incoming: string): string {
   const parts = new Set<string>();

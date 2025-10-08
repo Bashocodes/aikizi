@@ -15,6 +15,7 @@ type Body = {
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
 const DECODE_TIMEOUT_MS = 50000;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
@@ -60,10 +61,22 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   }
 
   const oldBalance = entitlementData.tokens_balance;
-  console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${oldBalance - 1}`);
 
-  // Generate idempotency key for this decode request
-  const idemKeyValue = idemKey(req) || `decode-${authResult.user.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const idemKeyValue = idemKey(req);
+  if (!idemKeyValue || !UUID_REGEX.test(idemKeyValue)) {
+    console.log(`${logPrefix} Invalid idempotency key`, { attemptId: idemKeyValue || 'missing', userId });
+    return cors(json({
+      success: false,
+      error: 'idem key must be a UUID',
+      message: 'idem key must be a UUID',
+      code: 'IDEMPOTENCY_KEY_INVALID'
+    }, 400));
+  }
+
+  console.log(`${logPrefix} About to spend token: user_id=${userId} ${oldBalance} -> ${oldBalance - 1}`, {
+    attemptId: idemKeyValue,
+  });
+  console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:start' }));
 
   // Use spend_tokens RPC function (SECURITY DEFINER)
   const { data: spendResult, error: spendError } = await dbClient.rpc('spend_tokens', {
@@ -72,12 +85,33 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   });
 
   if (spendError) {
-    console.error(`${logPrefix} Failed to spend token: user_id=${userId} error=${spendError.message}`);
-    return cors(json({ success: false, error: 'insufficient tokens' }, 402));
+    const errorMessage = spendError.message || '';
+    const isInsufficient = errorMessage.includes('insufficient');
+    console.error(`${logPrefix} Failed to spend token: user_id=${userId} attemptId=${idemKeyValue} error=${errorMessage}`);
+    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:error' }));
+
+    if (isInsufficient) {
+      return cors(json({
+        success: false,
+        error: 'insufficient tokens',
+        message: 'insufficient tokens',
+        code: 'INSUFFICIENT_FUNDS'
+      }, 402));
+    }
+
+    return cors(json({
+      success: false,
+      error: 'Server misconfiguration',
+      message: 'Server misconfiguration',
+      code: 'SERVER_MISCONFIG'
+    }, 500));
   }
 
   const newBalance = spendResult?.[0]?.balance ?? (oldBalance - 1);
-  console.log(`${logPrefix} Token spent successfully: user_id=${userId} new_balance=${newBalance}`);
+  console.log(`${logPrefix} Token spent successfully: user_id=${userId} new_balance=${newBalance}`, {
+    attemptId: idemKeyValue,
+  });
+  console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'spend:ok', balance: newBalance }));
 
   let body: Body;
   try {
@@ -85,7 +119,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   } catch (e) {
     console.log(`${logPrefix} Invalid JSON`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_json' }));
+    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
   }
 
   const hasBase64 = body?.base64 && body?.mimeType;
@@ -94,7 +129,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   if (!hasBase64 && !hasImageUrl) {
     console.log(`${logPrefix} Missing image data`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_payload' }));
+    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
   }
 
   const defaultModel = 'gemini-2.5-flash';
@@ -103,7 +139,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   if (!ALLOWED_MODELS.includes(model)) {
     console.log(`${logPrefix} Invalid model: ${model}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:invalid_model' }));
+    return cors(json({ success: false, error: 'invalid input', message: 'invalid input', code: 'INVALID_INPUT' }, 422));
   }
 
   console.log(`${logPrefix} Starting decode model=${model}`);
@@ -160,7 +197,13 @@ Return ONLY valid JSON, no markdown formatting.`;
         const ms = Date.now() - startTime;
         console.log(`${logPrefix} Timeout ms=${ms}`);
         await refundToken(dbClient, userData.id, logPrefix);
-        return cors(json({ success: false, error: 'decode timeout' }, 504));
+        console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:timeout' }));
+        return cors(json({
+          success: false,
+          error: 'decode timeout',
+          message: 'decode timeout',
+          code: 'DECODE_TIMEOUT'
+        }, 504));
       }
       throw error;
     }
@@ -168,11 +211,18 @@ Return ONLY valid JSON, no markdown formatting.`;
     const ms = Date.now() - startTime;
     console.error(`${logPrefix} Provider error ms=${ms}`);
     await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'internal error' }, 500));
+    console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:error' }));
+    return cors(json({
+      success: false,
+      error: 'Server misconfiguration',
+      message: 'Server misconfiguration',
+      code: 'SERVER_MISCONFIG'
+    }, 500));
   }
 
   const ms = Date.now() - startTime;
   console.log(`${logPrefix} Success ms=${ms}`);
+  console.log(`${logPrefix} telemetry`, JSON.stringify({ attemptId: idemKeyValue, userId, outcome: 'decode:ok', ms }));
 
   await dbClient.from('decodes').insert({
     user_id: userData.id,

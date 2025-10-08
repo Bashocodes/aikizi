@@ -1,9 +1,22 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { api } from '../lib/api';
 import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X, Copy } from 'lucide-react';
+
+async function generateAttemptUUID(): Promise<string> {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  if (typeof process !== 'undefined' && process.versions?.node) {
+    const { randomUUID } = await import('node:crypto');
+    return randomUUID();
+  }
+
+  throw new Error('randomUUID is not supported in this environment');
+}
 
 interface DecodeResult {
   styleCodes: string[];
@@ -43,6 +56,7 @@ export function DecodePage() {
   const [spentTokens, setSpentTokens] = useState<number>(0);
   const navigate = useNavigate();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const decodeAttemptRef = useRef<{ key: string | null; hasStarted: boolean }>({ key: null, hasStarted: false });
 
   const isPublisher = userRecord?.role === 'publisher' || userRecord?.role === 'admin';
   const lastKnownBalance = tokenBalanceState.lastKnownBalance;
@@ -74,6 +88,28 @@ export function DecodePage() {
     };
   }, []);
 
+  const clearDecodeAttemptKey = useCallback(() => {
+    if (decodeAttemptRef.current.key && import.meta.env.DEV) {
+      console.debug('[decode] clearing attempt key', decodeAttemptRef.current.key);
+    }
+    decodeAttemptRef.current = { key: null, hasStarted: false };
+  }, []);
+
+  const ensureDecodeAttemptKey = useCallback(async () => {
+    if (decodeAttemptRef.current.key) {
+      return decodeAttemptRef.current.key;
+    }
+
+    const key = await generateAttemptUUID();
+    decodeAttemptRef.current = { key, hasStarted: false };
+
+    if (import.meta.env.DEV) {
+      console.debug('[decode] generated new attempt key', key);
+    }
+
+    return key;
+  }, []);
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -81,6 +117,7 @@ export function DecodePage() {
         alert('File size must be under 25MB');
         return;
       }
+      clearDecodeAttemptKey();
       setSelectedFile(file);
       setPreviewUrl(URL.createObjectURL(file));
       setResult(null);
@@ -116,6 +153,27 @@ export function DecodePage() {
       console.log('[DecodePage] Aborting previous decode');
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
+    }
+
+    let attemptKey: string;
+    try {
+      attemptKey = await ensureDecodeAttemptKey();
+    } catch (keyError) {
+      console.error('[DecodePage] Failed to generate idempotency key', keyError);
+      setDecodeError('Unable to start decode. Please refresh and try again.');
+      return;
+    }
+
+    const isRetryAttempt = decodeAttemptRef.current.hasStarted;
+    decodeAttemptRef.current.hasStarted = true;
+
+    if (import.meta.env.DEV) {
+      console.debug('[decode] attempt start', {
+        attemptKey,
+        isRetry: isRetryAttempt,
+        fileName: selectedFile.name,
+        model: selectedModel,
+      });
     }
 
     setIsDecoding(true);
@@ -157,24 +215,37 @@ export function DecodePage() {
         },
         {
           signal: abortControllerRef.current.signal,
+          headers: {
+            'idem-key': attemptKey,
+          },
         }
       );
 
       abortControllerRef.current = null;
 
-      if (!response.success) {
-        console.error('[DecodePage] Decode failed', { error: response.error });
+      const responseCode = (response as any)?.code as string | undefined;
+      const responseError = ((response as any)?.error ?? (response as any)?.message) as string | undefined;
+      const isWorkerSuccess = (response as any)?.success === true;
 
-        if (response.error?.includes('auth required')) {
+      if (!isWorkerSuccess) {
+        console.error('[DecodePage] Decode failed', { error: responseError, code: responseCode });
+
+        const isNonRetryableError = Boolean(
+          responseCode && ['INSUFFICIENT_FUNDS', 'IDEMPOTENCY_KEY_INVALID'].includes(responseCode)
+        ) || Boolean(responseError?.includes('invalid input'));
+
+        if (responseError?.includes('auth required')) {
           setDecodeError('Authorization failed. Please sign out and back in.');
-        } else if (response.error?.includes('insufficient tokens')) {
+        } else if (responseCode === 'INSUFFICIENT_FUNDS' || responseError?.includes('insufficient tokens')) {
           setInsufficientTokens(true);
-        } else if (response.error?.includes('decode timeout')) {
+        } else if (responseError?.includes('decode timeout')) {
           setDecodeError('The model took too long. Please try again.');
-        } else if (response.error?.includes('invalid input')) {
+        } else if (responseCode === 'IDEMPOTENCY_KEY_INVALID') {
+          setDecodeError('Session validation failed. Please refresh and try again.');
+        } else if (responseError?.includes('invalid input')) {
           setDecodeError('Invalid input. Please check your image and try again.');
         } else {
-          setDecodeError(response.error || 'Failed to decode image. Please try again.');
+          setDecodeError(responseError || 'Failed to decode image. Please try again.');
         }
 
         setIsDecoding(false);
@@ -182,6 +253,10 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after decode error...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
+
+        if (isNonRetryableError || responseError?.includes('auth required')) {
+          clearDecodeAttemptKey();
+        }
         return;
       }
 
@@ -221,6 +296,7 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after successful decode...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
+        clearDecodeAttemptKey();
       } else {
         console.error('[DecodePage] Unexpected response format');
         setDecodeError('Unexpected response from server. Please try again.');
@@ -229,12 +305,14 @@ export function DecodePage() {
         console.log('[DecodePage] Refreshing balance after unexpected response...');
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
+        clearDecodeAttemptKey();
       }
     } catch (error: any) {
       console.error('[DecodePage] Error in decode flow:', error);
 
       if (error.name === 'AbortError') {
         console.log('[DecodePage] Decode was aborted by user');
+        clearDecodeAttemptKey();
       } else {
         setDecodeError('Failed to decode image. Please try again.');
       }
