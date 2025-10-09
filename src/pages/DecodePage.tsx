@@ -25,7 +25,7 @@ const MODEL_OPTIONS = [
 ];
 
 export function DecodePage() {
-  const { userRecord, tokenBalance, refreshTokenBalance } = useAuth();
+  const { userRecord, tokenBalance, refreshTokenBalance, setTokenBalance } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -118,7 +118,9 @@ export function DecodePage() {
     setDecodeError(null);
     setDecodeStatus('decoding');
 
-    console.log('[DecodePage] Starting decode flow', { tokenBalance, model: selectedModel });
+    const optimisticBalance = tokenBalance - 1;
+    setTokenBalance(optimisticBalance);
+    console.log('[DecodePage] Starting decode flow', { tokenBalance, optimisticBalance, model: selectedModel });
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -156,6 +158,15 @@ export function DecodePage() {
       if (!response.success) {
         console.error('[DecodePage] Decode failed', { error: response.error });
 
+        if (response.newBalance !== undefined && response.newBalance !== null) {
+          console.log('[DecodePage] Updating balance from error response:', response.newBalance);
+          setTokenBalance(response.newBalance);
+        } else {
+          console.log('[DecodePage] No balance in error response, refreshing...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          await refreshTokenBalance();
+        }
+
         if (response.error?.includes('auth required')) {
           setDecodeError('Authorization failed. Please sign out and back in.');
         } else if (response.error?.includes('insufficient tokens')) {
@@ -170,14 +181,18 @@ export function DecodePage() {
 
         setIsDecoding(false);
         setDecodeStatus('error');
-        console.log('[DecodePage] Refreshing balance after decode error...');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await refreshTokenBalance();
         return;
       }
 
       if (response.result?.content) {
         console.log('[DecodePage] Decode success');
+
+        if (response.result.newBalance !== undefined && response.result.newBalance !== null) {
+          console.log('[DecodePage] Updating balance from success response:', response.result.newBalance);
+          setTokenBalance(response.result.newBalance);
+        } else {
+          console.log('[DecodePage] No balance in success response, keeping optimistic balance');
+        }
 
         try {
           const cleaned = response.result.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -209,9 +224,6 @@ export function DecodePage() {
         setSpentTokens(response.result.tokensUsed || 1);
         setIsDecoding(false);
         setDecodeStatus('done');
-        console.log('[DecodePage] Refreshing balance after successful decode...');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await refreshTokenBalance();
       } else {
         console.error('[DecodePage] Unexpected response format');
         setDecodeError('Unexpected response from server. Please try again.');
@@ -226,15 +238,16 @@ export function DecodePage() {
 
       if (error.name === 'AbortError') {
         console.log('[DecodePage] Decode was aborted by user');
+        setTokenBalance(tokenBalance);
       } else {
         setDecodeError('Failed to decode image. Please try again.');
+        console.log('[DecodePage] Refreshing balance after exception...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await refreshTokenBalance();
       }
 
       setIsDecoding(false);
       setDecodeStatus('error');
-      console.log('[DecodePage] Refreshing balance after exception...');
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await refreshTokenBalance();
     }
   };
 

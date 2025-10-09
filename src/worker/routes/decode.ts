@@ -84,8 +84,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     body = await req.json() as Body;
   } catch (e) {
     console.log(`${logPrefix} Invalid JSON`);
-    await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ success: false, error: 'invalid input', newBalance: refundedBalance }, 422));
   }
 
   const hasBase64 = body?.base64 && body?.mimeType;
@@ -93,8 +93,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   if (!hasBase64 && !hasImageUrl) {
     console.log(`${logPrefix} Missing image data`);
-    await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ success: false, error: 'invalid input', newBalance: refundedBalance }, 422));
   }
 
   const defaultModel = 'gemini-2.5-flash';
@@ -102,8 +102,8 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   if (!ALLOWED_MODELS.includes(model)) {
     console.log(`${logPrefix} Invalid model: ${model}`);
-    await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'invalid input' }, 422));
+    const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ success: false, error: 'invalid input', newBalance: refundedBalance }, 422));
   }
 
   console.log(`${logPrefix} Starting decode model=${model}`);
@@ -159,16 +159,16 @@ Return ONLY valid JSON, no markdown formatting.`;
       if (error.message === 'DECODE_TIMEOUT') {
         const ms = Date.now() - startTime;
         console.log(`${logPrefix} Timeout ms=${ms}`);
-        await refundToken(dbClient, userData.id, logPrefix);
-        return cors(json({ success: false, error: 'decode timeout' }, 504));
+        const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
+        return cors(json({ success: false, error: 'decode timeout', newBalance: refundedBalance }, 504));
       }
       throw error;
     }
   } catch (error: any) {
     const ms = Date.now() - startTime;
     console.error(`${logPrefix} Provider error ms=${ms}`);
-    await refundToken(dbClient, userData.id, logPrefix);
-    return cors(json({ success: false, error: 'internal error' }, 500));
+    const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
+    return cors(json({ success: false, error: 'internal error', newBalance: refundedBalance }, 500));
   }
 
   const ms = Date.now() - startTime;
@@ -184,16 +184,26 @@ Return ONLY valid JSON, no markdown formatting.`;
     private: true
   });
 
+  const { data: updatedBalance } = await dbClient
+    .from('entitlements')
+    .select('tokens_balance')
+    .eq('user_id', userId)
+    .single();
+
+  const finalBalance = updatedBalance?.tokens_balance ?? newBalance;
+  console.log(`${logPrefix} Returning final balance: ${finalBalance}`);
+
   return cors(json({
     success: true,
     result: {
       content: text,
-      tokensUsed: 1
+      tokensUsed: 1,
+      newBalance: finalBalance
     }
   }));
 }
 
-async function refundToken(dbClient: any, userId: string, logPrefix: string): Promise<void> {
+async function refundToken(dbClient: any, userId: string, logPrefix: string): Promise<number | null> {
   try {
     console.log(`${logPrefix} Attempting refund for user_id=${userId}`);
     const { data, error } = await dbClient
@@ -210,10 +220,13 @@ async function refundToken(dbClient: any, userId: string, logPrefix: string): Pr
         .update({ tokens_balance: newBalance })
         .eq('user_id', userId);
       console.log(`${logPrefix} Refunded 1 token: user_id=${userId} ${oldBalance} -> ${newBalance}`);
+      return newBalance;
     } else {
       console.error(`${logPrefix} Refund failed to get balance: user_id=${userId} error=${error?.message}`);
+      return data?.tokens_balance ?? null;
     }
   } catch (e) {
     console.error(`${logPrefix} Refund error: user_id=${userId}`, e);
+    return null;
   }
 }

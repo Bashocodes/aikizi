@@ -21,6 +21,7 @@ interface AuthContextType {
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshTokenBalance: () => Promise<void>;
+  setTokenBalance: (balance: number) => void;
 }
 
 let toastTimeout: NodeJS.Timeout | null = null;
@@ -355,6 +356,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signInWithGoogle,
         signOut,
         refreshTokenBalance,
+        setTokenBalance,
       }}
     >
       {children}
