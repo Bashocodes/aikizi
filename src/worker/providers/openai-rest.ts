@@ -30,12 +30,13 @@ export async function callOpenAIREST(
   }
 
   // Map model names to actual OpenAI model identifiers
+  // Using the actual model names directly - no mapping needed
   const modelMap: Record<string, string> = {
-    'gpt-5': 'gpt-4o',
-    'gpt-5-mini': 'gpt-4o-mini',
+    'gpt-5': 'gpt-5',
+    'gpt-5-mini': 'gpt-5-mini',
   };
 
-  const actualModel = modelMap[input.model] || 'gpt-4o';
+  const actualModel = modelMap[input.model] || 'gpt-5';
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
   // Build the image content based on input type
