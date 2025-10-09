@@ -84,10 +84,10 @@ export async function callOpenAIREST(
   };
 
   if (isGPT5) {
-    requestBody.max_completion_tokens = 1500;
+    requestBody.max_completion_tokens = 3000;
     // GPT-5 only supports temperature=1, so we omit it (uses default)
   } else {
-    requestBody.max_tokens = 1500;
+    requestBody.max_tokens = 3000;
     requestBody.temperature = 0.7;
   }
 
@@ -117,11 +117,88 @@ export async function callOpenAIREST(
     choicesCount: responseData.choices?.length || 0
   });
 
-  const content = responseData.choices?.[0]?.message?.content;
+  // Log complete response structure for debugging
+  const firstChoice = responseData.choices?.[0];
+  if (firstChoice) {
+    console.log(`${logPrefix} First choice structure:`, {
+      finishReason: firstChoice.finish_reason,
+      hasMessage: !!firstChoice.message,
+      messageKeys: firstChoice.message ? Object.keys(firstChoice.message) : [],
+      hasContent: firstChoice.message?.content !== undefined && firstChoice.message?.content !== null,
+      contentType: typeof firstChoice.message?.content,
+      hasRefusal: firstChoice.message?.refusal !== undefined && firstChoice.message?.refusal !== null,
+      refusalValue: firstChoice.message?.refusal,
+      hasText: firstChoice.text !== undefined && firstChoice.text !== null,
+      messageSnippet: firstChoice.message ? JSON.stringify(firstChoice.message).substring(0, 200) : 'no message'
+    });
+  } else {
+    console.error(`${logPrefix} No choices in response`, { responseData });
+    throw new Error('No choices in OpenAI response');
+  }
 
-  if (!content || typeof content !== 'string') {
-    console.error(`${logPrefix} No content in response`, { responseData });
-    throw new Error('No content in OpenAI response');
+  // Multi-path content extraction strategy
+  let content: string | null = null;
+
+  // Path 1: Standard message.content (GPT-4 and most models)
+  if (firstChoice.message?.content && typeof firstChoice.message.content === 'string') {
+    content = firstChoice.message.content;
+    console.log(`${logPrefix} Content extracted from message.content`);
+  }
+  // Path 2: Content as array (some models return structured content)
+  else if (Array.isArray(firstChoice.message?.content)) {
+    content = firstChoice.message.content
+      .map((item: any) => {
+        if (typeof item === 'string') return item;
+        if (item?.text) return item.text;
+        if (item?.content) return item.content;
+        return '';
+      })
+      .join('\n')
+      .trim();
+    console.log(`${logPrefix} Content extracted from message.content array`);
+  }
+  // Path 3: Legacy text field (older API format)
+  else if (firstChoice.text && typeof firstChoice.text === 'string') {
+    content = firstChoice.text;
+    console.log(`${logPrefix} Content extracted from text field`);
+  }
+  // Path 4: Alternative message.text field
+  else if (firstChoice.message?.text && typeof firstChoice.message.text === 'string') {
+    content = firstChoice.message.text;
+    console.log(`${logPrefix} Content extracted from message.text`);
+  }
+
+  // Check for refusal or content filter
+  if (firstChoice.message?.refusal) {
+    console.error(`${logPrefix} Content refused by OpenAI`, {
+      refusal: firstChoice.message.refusal,
+      finishReason: firstChoice.finish_reason
+    });
+    throw new Error(`OpenAI refused to generate content: ${firstChoice.message.refusal}`);
+  }
+
+  // Check if response was truncated
+  if (firstChoice.finish_reason === 'length') {
+    console.warn(`${logPrefix} Response truncated due to token limit`, {
+      finishReason: firstChoice.finish_reason,
+      hasContent: !!content,
+      contentLength: content?.length || 0
+    });
+    // Still try to parse if we have partial content
+    if (!content) {
+      throw new Error('OpenAI response truncated and no content available');
+    }
+  }
+
+  // Final validation
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
+    console.error(`${logPrefix} No valid content extracted`, {
+      contentExists: !!content,
+      contentType: typeof content,
+      contentLength: content?.length || 0,
+      fullChoice: JSON.stringify(firstChoice).substring(0, 500)
+    });
+    throw new Error('No content in OpenAI response after trying all extraction paths');
   }
 
   console.log(`${logPrefix} Content received`, {
