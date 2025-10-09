@@ -6,13 +6,16 @@ import { api } from '../lib/api';
 import { Upload, Sparkles, CheckCircle, ExternalLink, AlertCircle, X, Copy } from 'lucide-react';
 
 interface DecodeResult {
-  styleCodes: string[];
-  tags: string[];
-  subjects: string[];
-  story: string;
-  mix: string;
-  expand: string;
-  sound: string;
+  title: string;
+  style: string;
+  prompt: string;
+  keyTokens: string[];
+  creativeRemixes: string[];
+  outpaintingPrompts: string[];
+  animationPrompts: string[];
+  musicPrompts: string[];
+  dialoguePrompts: string[];
+  storyPrompts: string[];
 }
 
 type DecodeStatus = 'idle' | 'decoding' | 'done' | 'error';
@@ -38,7 +41,7 @@ export function DecodePage() {
   const [insufficientTokens, setInsufficientTokens] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState<DecodeStatus>('idle');
   const [decodeError, setDecodeError] = useState<string | null>(null);
-  const [activePromptTab, setActivePromptTab] = useState<'story' | 'mix' | 'expand' | 'sound'>('story');
+  const [activePromptTab, setActivePromptTab] = useState<'creative' | 'outpainting' | 'animation' | 'music' | 'dialogue' | 'story'>('creative');
   const [copiedPrompt, setCopiedPrompt] = useState<string | null>(null);
   const [spentTokens, setSpentTokens] = useState<number>(0);
   const navigate = useNavigate();
@@ -199,26 +202,32 @@ export function DecodePage() {
           const cleaned = response.result.content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
           const parsed = JSON.parse(cleaned);
 
-          const normalized = {
-            styleCodes: parsed.styleCodes || [],
-            tags: parsed.tags || [],
-            subjects: parsed.subjects || [],
-            story: parsed.prompts?.story || '',
-            mix: parsed.prompts?.mix || '',
-            expand: parsed.prompts?.expand || '',
-            sound: parsed.prompts?.sound || ''
+          const normalized: DecodeResult = {
+            title: parsed.title || '',
+            style: parsed.style || '',
+            prompt: parsed.prompt || '',
+            keyTokens: parsed.keyTokens || [],
+            creativeRemixes: parsed.creativeRemixes || [],
+            outpaintingPrompts: parsed.outpaintingPrompts || [],
+            animationPrompts: parsed.animationPrompts || [],
+            musicPrompts: parsed.musicPrompts || [],
+            dialoguePrompts: parsed.dialoguePrompts || [],
+            storyPrompts: parsed.storyPrompts || []
           };
 
           setResult(normalized);
         } catch (parseError) {
           setResult({
-            styleCodes: [],
-            tags: [],
-            subjects: [],
-            story: response.result.content,
-            mix: '',
-            expand: '',
-            sound: ''
+            title: '',
+            style: '',
+            prompt: response.result.content,
+            keyTokens: [],
+            creativeRemixes: [],
+            outpaintingPrompts: [],
+            animationPrompts: [],
+            musicPrompts: [],
+            dialoguePrompts: [],
+            storyPrompts: []
           });
         }
 
@@ -360,15 +369,7 @@ export function DecodePage() {
         return;
       }
 
-      const analysisText = JSON.stringify({
-        styleCodes: result.styleCodes,
-        tags: result.tags,
-        subjects: result.subjects,
-        story: result.story,
-        mix: result.mix,
-        expand: result.expand,
-        sound: result.sound
-      });
+      const analysisText = JSON.stringify(result);
 
       const postResponse = await api.post('/posts/create', {
         cf_image_id: uploadResponse.id,
@@ -554,33 +555,17 @@ export function DecodePage() {
           {result && (
             <div className="space-y-6">
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Style Codes</h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.styleCodes.map((code, i) => (
-                    <span key={i} className="px-4 py-2 bg-gradient-to-r from-gray-900 to-gray-800 dark:from-white dark:to-gray-100 text-white dark:text-gray-900 rounded-lg font-mono text-sm">
-                      {code}
-                    </span>
-                  ))}
-                </div>
+                <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">{result.title}</h3>
+                <p className="text-lg text-gray-700 dark:text-gray-300 mb-4">{result.style}</p>
+                <p className="text-gray-900 dark:text-white leading-relaxed">{result.prompt}</p>
               </div>
 
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Tags</h3>
+                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Key Tokens</h3>
                 <div className="flex flex-wrap gap-2">
-                  {result.tags.map((tag, i) => (
-                    <span key={i} className="px-3 py-1 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-full text-sm">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase mb-3">Subjects</h3>
-                <div className="flex flex-wrap gap-2">
-                  {result.subjects.map((subject, i) => (
-                    <span key={i} className="px-4 py-2 bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg">
-                      {subject}
+                  {result.keyTokens.map((token, i) => (
+                    <span key={i} className="px-4 py-2 bg-gradient-to-r from-gray-900 to-gray-800 dark:from-white dark:to-gray-100 text-white dark:text-gray-900 rounded-lg font-semibold text-sm">
+                      {token}
                     </span>
                   ))}
                 </div>
@@ -589,12 +574,12 @@ export function DecodePage() {
               <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase">Prompts</h3>
-                  <div className="flex gap-2">
-                    {(['story', 'mix', 'expand', 'sound'] as const).map((tab) => (
+                  <div className="flex flex-wrap gap-2">
+                    {(['creative', 'outpainting', 'animation', 'music', 'dialogue', 'story'] as const).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setActivePromptTab(tab)}
-                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${
+                        className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                           activePromptTab === tab
                             ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
                             : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
@@ -606,12 +591,47 @@ export function DecodePage() {
                   </div>
                 </div>
                 <div className="relative">
-                  <p className="text-gray-900 dark:text-white leading-relaxed pr-12">
-                    {result[activePromptTab]}
-                  </p>
+                  <div className="text-gray-900 dark:text-white leading-relaxed pr-12 space-y-2">
+                    {activePromptTab === 'creative' && result.creativeRemixes.map((remix, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {remix}
+                      </p>
+                    ))}
+                    {activePromptTab === 'outpainting' && result.outpaintingPrompts.map((prompt, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {prompt}
+                      </p>
+                    ))}
+                    {activePromptTab === 'animation' && result.animationPrompts.map((prompt, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {prompt}
+                      </p>
+                    ))}
+                    {activePromptTab === 'music' && result.musicPrompts.map((prompt, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {prompt}
+                      </p>
+                    ))}
+                    {activePromptTab === 'dialogue' && result.dialoguePrompts.map((prompt, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {prompt}
+                      </p>
+                    ))}
+                    {activePromptTab === 'story' && result.storyPrompts.map((prompt, i) => (
+                      <p key={i} className="pb-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                        {i + 1}. {prompt}
+                      </p>
+                    ))}
+                  </div>
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText(result[activePromptTab]);
+                      const content = activePromptTab === 'creative' ? result.creativeRemixes.join('\n') :
+                        activePromptTab === 'outpainting' ? result.outpaintingPrompts.join('\n') :
+                        activePromptTab === 'animation' ? result.animationPrompts.join('\n') :
+                        activePromptTab === 'music' ? result.musicPrompts.join('\n') :
+                        activePromptTab === 'dialogue' ? result.dialoguePrompts.join('\n') :
+                        result.storyPrompts.join('\n');
+                      navigator.clipboard.writeText(content);
                       setCopiedPrompt(activePromptTab);
                       setTimeout(() => setCopiedPrompt(null), 2000);
                     }}

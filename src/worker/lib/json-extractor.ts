@@ -1,13 +1,14 @@
 export interface DecodeResult {
-  styleCodes: string[];
-  tags: string[];
-  subjects: string[];
-  prompts: {
-    story: string;
-    mix: string;
-    expand: string;
-    sound: string;
-  };
+  title: string;
+  style: string;
+  prompt: string;
+  keyTokens: string[];
+  creativeRemixes: string[];
+  outpaintingPrompts: string[];
+  animationPrompts: string[];
+  musicPrompts: string[];
+  dialoguePrompts: string[];
+  storyPrompts: string[];
 }
 
 /**
@@ -106,59 +107,89 @@ export function extractAndParseJSON(responseText: string, logPrefix: string = '[
  */
 function validateAndNormalize(parsed: any, logPrefix: string): DecodeResult {
   console.log(`${logPrefix} Validating parsed JSON`, {
-    hasStyleCodes: Array.isArray(parsed.styleCodes),
-    hasTags: Array.isArray(parsed.tags),
-    hasSubjects: Array.isArray(parsed.subjects),
-    hasPrompts: typeof parsed.prompts === 'object' && parsed.prompts !== null
+    hasTitle: typeof parsed.title === 'string',
+    hasStyle: typeof parsed.style === 'string',
+    hasPrompt: typeof parsed.prompt === 'string',
+    hasKeyTokens: Array.isArray(parsed.keyTokens),
+    hasCreativeRemixes: Array.isArray(parsed.creativeRemixes),
+    hasOutpaintingPrompts: Array.isArray(parsed.outpaintingPrompts),
+    hasAnimationPrompts: Array.isArray(parsed.animationPrompts),
+    hasMusicPrompts: Array.isArray(parsed.musicPrompts),
+    hasDialoguePrompts: Array.isArray(parsed.dialoguePrompts),
+    hasStoryPrompts: Array.isArray(parsed.storyPrompts)
   });
 
-  // Validate and normalize styleCodes
-  const styleCodes = Array.isArray(parsed.styleCodes)
-    ? parsed.styleCodes.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+  // Validate and normalize string fields
+  const title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
+  const style = typeof parsed.style === 'string' ? parsed.style.trim() : '';
+  const prompt = typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
+
+  // Validate and normalize array fields
+  const keyTokens = Array.isArray(parsed.keyTokens)
+    ? parsed.keyTokens.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
     : [];
 
-  // Validate and normalize tags
-  const tags = Array.isArray(parsed.tags)
-    ? parsed.tags.filter((t: any) => typeof t === 'string' && t.trim().length > 0)
+  const creativeRemixes = Array.isArray(parsed.creativeRemixes)
+    ? parsed.creativeRemixes.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
     : [];
 
-  // Validate and normalize subjects
-  const subjects = Array.isArray(parsed.subjects)
-    ? parsed.subjects.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+  const outpaintingPrompts = Array.isArray(parsed.outpaintingPrompts)
+    ? parsed.outpaintingPrompts.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
     : [];
 
-  // Validate and normalize prompts
-  const prompts = {
-    story: typeof parsed.prompts?.story === 'string' ? parsed.prompts.story.trim() : '',
-    mix: typeof parsed.prompts?.mix === 'string' ? parsed.prompts.mix.trim() : '',
-    expand: typeof parsed.prompts?.expand === 'string' ? parsed.prompts.expand.trim() : '',
-    sound: typeof parsed.prompts?.sound === 'string' ? parsed.prompts.sound.trim() : ''
-  };
+  const animationPrompts = Array.isArray(parsed.animationPrompts)
+    ? parsed.animationPrompts.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+    : [];
+
+  const musicPrompts = Array.isArray(parsed.musicPrompts)
+    ? parsed.musicPrompts.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+    : [];
+
+  const dialoguePrompts = Array.isArray(parsed.dialoguePrompts)
+    ? parsed.dialoguePrompts.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+    : [];
+
+  const storyPrompts = Array.isArray(parsed.storyPrompts)
+    ? parsed.storyPrompts.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+    : [];
 
   const result: DecodeResult = {
-    styleCodes,
-    tags,
-    subjects,
-    prompts
+    title,
+    style,
+    prompt,
+    keyTokens,
+    creativeRemixes,
+    outpaintingPrompts,
+    animationPrompts,
+    musicPrompts,
+    dialoguePrompts,
+    storyPrompts
   };
 
   console.log(`${logPrefix} Validation complete`, {
-    styleCodesCount: styleCodes.length,
-    tagsCount: tags.length,
-    subjectsCount: subjects.length,
-    hasStoryPrompt: prompts.story.length > 0,
-    hasMixPrompt: prompts.mix.length > 0,
-    hasExpandPrompt: prompts.expand.length > 0,
-    hasSoundPrompt: prompts.sound.length > 0
+    titleLength: title.length,
+    styleLength: style.length,
+    promptLength: prompt.length,
+    keyTokensCount: keyTokens.length,
+    creativeRemixesCount: creativeRemixes.length,
+    outpaintingPromptsCount: outpaintingPrompts.length,
+    animationPromptsCount: animationPrompts.length,
+    musicPromptsCount: musicPrompts.length,
+    dialoguePromptsCount: dialoguePrompts.length,
+    storyPromptsCount: storyPrompts.length
   });
 
   // Check if we have minimal valid data
-  if (styleCodes.length === 0 && tags.length === 0 && subjects.length === 0) {
-    console.warn(`${logPrefix} Warning: No array data extracted from response`);
+  if (!title && !style && !prompt) {
+    console.warn(`${logPrefix} Warning: No basic fields (title/style/prompt) extracted from response`);
   }
 
-  if (!prompts.story && !prompts.mix && !prompts.expand && !prompts.sound) {
-    console.warn(`${logPrefix} Warning: No prompt data extracted from response`);
+  const totalArrayItems = keyTokens.length + creativeRemixes.length + outpaintingPrompts.length +
+                          animationPrompts.length + musicPrompts.length + dialoguePrompts.length +
+                          storyPrompts.length;
+
+  if (totalArrayItems === 0) {
+    console.warn(`${logPrefix} Warning: No array data extracted from response`);
   }
 
   return result;
