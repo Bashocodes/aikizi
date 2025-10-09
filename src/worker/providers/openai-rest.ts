@@ -45,43 +45,72 @@ export async function callOpenAIREST(
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
   // ---- Build image block for Responses API ----
-  let imageBlock: any;
+  const clean = input.base64?.replace(/\s+/g, '').replace(/^data:[^;]+;base64,/, '');
+  const dataUri = input.base64 && input.mimeType
+    ? `data:${input.mimeType};base64,${clean}`
+    : undefined;
+  const imageBlock = { type: 'input_image', image_url: dataUri ?? input.imageUrl };
 
-  if (input.base64 && input.mimeType) {
-    const cleanBase64 = input.base64.replace(/\s+/g, '').replace(/^data:[^;]+;base64,/, '');
-    const dataUri = `data:${input.mimeType};base64,${cleanBase64}`;
-    imageBlock = { type: 'input_image', image_url: dataUri };
-    console.log(`${logPrefix} Using base64 data URI (${dataUri.length} chars)`);
-  } else if (input.imageUrl) {
-    imageBlock = { type: 'input_image', image_url: input.imageUrl };
-    console.log(`${logPrefix} Using image URL: ${input.imageUrl}`);
-  } else {
+  if (!imageBlock.image_url) {
     throw new Error('Either base64+mimeType or imageUrl must be provided');
   }
 
+  console.log(`${logPrefix} Image block prepared (${typeof imageBlock.image_url === 'string' && imageBlock.image_url.startsWith('data:') ? `data URI, ${imageBlock.image_url.length} chars` : `URL: ${imageBlock.image_url}`})`);
+
+  // Warn if data URI is too large
+  if (typeof imageBlock.image_url === 'string' && imageBlock.image_url.startsWith('data:') && imageBlock.image_url.length > 1_000_000) {
+    console.warn(`${logPrefix} Warning: data URI is ${imageBlock.image_url.length} chars (>1MB). Consider reducing image size to avoid 504 timeouts.`);
+  }
+
   // ---- Build Responses API payload ----
-  const requestBody = {
+  const requestBody: any = {
     model: actualModel,
-    instructions: AI_DECODE_PROMPT,
+    instructions: 'Return JSON exactly matching the schema from the image.',
     input: [
       {
         type: 'message',
         role: 'user',
         content: [
-          { type: 'input_text', text: 'Analyze this image based on the given style and structure.' },
+          { type: 'input_text', text: 'Analyze the image and fill the schema.' },
           imageBlock
         ]
       }
     ],
-    store: false,
-    max_output_tokens: 16000
+    max_output_tokens: 3000,
+    temperature: 0.2,
+    store: false
+  };
+
+  // ---- Enforce output shape with json_schema ----
+  requestBody.response_format = {
+    type: 'json_schema',
+    json_schema: {
+      name: 'styledrop_schema',
+      schema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          style: { type: 'string' },
+          prompt: { type: 'string' },
+          keyTokens: { type: 'array', items: { type: 'string' }, minItems: 7, maxItems: 7 },
+          creativeRemixes: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 },
+          outpaintingPrompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 },
+          animationPrompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 },
+          musicPrompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 },
+          dialoguePrompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 },
+          storyPrompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 }
+        },
+        required: ['title', 'style', 'prompt', 'keyTokens', 'creativeRemixes', 'outpaintingPrompts', 'animationPrompts', 'musicPrompts', 'dialoguePrompts', 'storyPrompts'],
+        additionalProperties: false
+      },
+      strict: true
+    }
   };
 
   // Log sanitized preview
   const preview = JSON.parse(JSON.stringify(requestBody));
-  if (preview.input?.[0]?.content?.[1]?.image_url?.startsWith('data:')) {
-    preview.input[0].content[1].image_url = '<data-uri>';
-  }
+  const img = preview.input?.[0]?.content?.find((c: any) => c.type === 'input_image');
+  if (img?.image_url?.startsWith('data:')) img.image_url = '<data-uri>';
   console.log(`${logPrefix} Request preview`, preview);
 
   const bodyStr = JSON.stringify(requestBody);
@@ -122,7 +151,16 @@ export async function callOpenAIREST(
 
   if (!content) throw new Error('No output text found in response');
 
-  const result = extractAndParseJSON(content, logPrefix);
+  // With json_schema response_format, the output should be valid JSON directly
+  let result: DecodeResult;
+  try {
+    result = JSON.parse(content);
+    console.log(`${logPrefix} Parsed structured JSON output directly`);
+  } catch (parseErr) {
+    console.warn(`${logPrefix} Structured JSON parse failed, falling back to extraction`, parseErr);
+    result = extractAndParseJSON(content, logPrefix);
+  }
+
   const latencyMs = Date.now() - startTime;
 
   console.log(`${logPrefix} Decode completed successfully`, { latencyMs, model: actualModel });
