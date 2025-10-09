@@ -30,12 +30,13 @@ export async function callGeminiREST(
   }
 
   // Map model names to actual Gemini model identifiers
+  // Using the latest Gemini 2.5 models directly
   const modelMap: Record<string, string> = {
-    'gemini-2.5-pro': 'gemini-2.0-flash-exp',
-    'gemini-2.5-flash': 'gemini-2.0-flash-exp',
+    'gemini-2.5-pro': 'gemini-2.5-pro-latest',
+    'gemini-2.5-flash': 'gemini-2.5-flash-latest',
   };
 
-  const actualModel = modelMap[input.model] || 'gemini-2.0-flash-exp';
+  const actualModel = modelMap[input.model] || 'gemini-2.5-flash-latest';
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
   // Build the parts array for Gemini API
