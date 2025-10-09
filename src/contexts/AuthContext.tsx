@@ -171,33 +171,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.id) {
-        const { data: internalUser, error: userError } = await supabase
-          .from('users')
-          .select('id')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        if (userError || !internalUser) {
-          console.error('[Auth] Error fetching internal user_id:', userError?.message || 'user not found');
-          return {
-            tokens_balance: balance,
-            plan_name: 'free'
-          };
-        }
-
         const { data, error } = await supabase
           .from('entitlements')
           .select(`
             user_id,
             plans (name)
           `)
-          .eq('user_id', internalUser.id)
+          .eq('user_id', user.id)
           .maybeSingle();
 
         if (error) {
           console.error('[Auth] Error fetching plan name:', error);
-        } else if (!data) {
-          console.warn('[Auth] No entitlements found for user_id:', internalUser.id);
         }
 
         return {
