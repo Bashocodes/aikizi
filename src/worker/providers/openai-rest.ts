@@ -48,22 +48,106 @@ export async function callOpenAIREST(
   const actualModel = modelMap[input.model] || 'gpt-5';
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
-  // Build the image content for Responses API
-  // The Responses API expects input to be a message with content array
-  let imageData: string;
-  let imageType: 'base64' | 'url';
+  // Upload image to OpenAI Files API first
+  // The Responses API requires images to be uploaded via Files API and referenced by file ID
+  let fileId: string;
 
   if (input.base64 && input.mimeType) {
-    // Use base64 encoded image (strip data URI prefix if present)
+    // Use base64 encoded image - upload to Files API
     const cleanBase64 = input.base64.replace(/\s+/g, '').replace(/^data:image\/[^;]+;base64,/, '');
-    imageData = cleanBase64;
-    imageType = 'base64';
-    console.log(`${logPrefix} Using base64 image (${input.mimeType}, ${cleanBase64.length} bytes)`);
+    console.log(`${logPrefix} Uploading base64 image to Files API (${input.mimeType}, ${cleanBase64.length} bytes)`);
+
+    // Convert base64 to binary
+    const binaryString = atob(cleanBase64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: input.mimeType });
+
+    // Determine file extension from MIME type
+    const ext = input.mimeType.split('/')[1] || 'png';
+    const filename = `upload.${ext}`;
+
+    // Create FormData for file upload
+    const formData = new FormData();
+    formData.append('file', blob, filename);
+    formData.append('purpose', 'vision');
+
+    const uploadStart = Date.now();
+    console.log(`${logPrefix} Uploading to Files API...`);
+
+    const uploadResponse = await fetch('https://api.openai.com/v1/files', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+      },
+      body: formData,
+      signal
+    });
+
+    const uploadDuration = Date.now() - uploadStart;
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text().catch(() => '');
+      console.error(`${logPrefix} Files API upload error: ${uploadResponse.status} ${uploadResponse.statusText}`, {
+        errorPreview: errorText.substring(0, 500),
+        uploadDuration
+      });
+      throw new Error(`OpenAI Files API error: ${uploadResponse.status} ${uploadResponse.statusText}`);
+    }
+
+    const uploadResult = await uploadResponse.json();
+    fileId = uploadResult.id;
+    console.log(`${logPrefix} File uploaded successfully in ${uploadDuration}ms, file_id=${fileId}`);
+
   } else if (input.imageUrl) {
-    // Use image URL
-    imageData = input.imageUrl;
-    imageType = 'url';
-    console.log(`${logPrefix} Using image URL: ${input.imageUrl}`);
+    // For image URLs, we need to download and upload to Files API
+    console.log(`${logPrefix} Downloading image URL: ${input.imageUrl}`);
+
+    const downloadStart = Date.now();
+    const imageResponse = await fetch(input.imageUrl, { signal });
+
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to download image from URL: ${imageResponse.status}`);
+    }
+
+    const imageBlob = await imageResponse.blob();
+    const downloadDuration = Date.now() - downloadStart;
+    console.log(`${logPrefix} Image downloaded in ${downloadDuration}ms, size=${imageBlob.size} bytes`);
+
+    // Upload to Files API
+    const formData = new FormData();
+    formData.append('file', imageBlob, 'upload.png');
+    formData.append('purpose', 'vision');
+
+    const uploadStart = Date.now();
+    console.log(`${logPrefix} Uploading to Files API...`);
+
+    const uploadResponse = await fetch('https://api.openai.com/v1/files', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+      },
+      body: formData,
+      signal
+    });
+
+    const uploadDuration = Date.now() - uploadStart;
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text().catch(() => '');
+      console.error(`${logPrefix} Files API upload error: ${uploadResponse.status} ${uploadResponse.statusText}`, {
+        errorPreview: errorText.substring(0, 500),
+        uploadDuration
+      });
+      throw new Error(`OpenAI Files API error: ${uploadResponse.status} ${uploadResponse.statusText}`);
+    }
+
+    const uploadResult = await uploadResponse.json();
+    fileId = uploadResult.id;
+    console.log(`${logPrefix} File uploaded successfully in ${uploadDuration}ms, file_id=${fileId}`);
+
   } else {
     throw new Error('Either base64+mimeType or imageUrl must be provided');
   }
@@ -71,7 +155,7 @@ export async function callOpenAIREST(
   // Construct the Responses API request
   // Using the new Responses API format for GPT-5
   // Note: Responses API uses 'max_output_tokens' instead of 'max_completion_tokens'
-  // The input must be a message type with content array containing input_text and input_image
+  // The input must be a message type with content array containing input_image with file reference
   const requestBody: any = {
     model: actualModel,
     instructions: AI_DECODE_PROMPT,
@@ -82,7 +166,7 @@ export async function callOpenAIREST(
         content: [
           {
             type: 'input_image',
-            image_data: imageData
+            image_file: fileId
           }
         ]
       }
@@ -96,8 +180,7 @@ export async function callOpenAIREST(
     model: actualModel,
     bodySize: requestBodyStr.length,
     hasSignal: !!signal,
-    imageType: imageType,
-    imageSize: imageData.length,
+    fileId: fileId,
     maxOutputTokens: 16000
   });
 
