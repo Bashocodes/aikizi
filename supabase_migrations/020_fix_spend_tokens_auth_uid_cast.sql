@@ -12,9 +12,14 @@
     - Ensures type compatibility between text and uuid
 
   3. Changes
+    - Drop existing spend_tokens function
     - Recreate spend_tokens function with proper type casting
     - No data changes, only function definition update
 */
+
+-- Drop existing spend_tokens function (handles parameter mismatch)
+DROP FUNCTION IF EXISTS public.spend_tokens(integer, text);
+DROP FUNCTION IF EXISTS public.spend_tokens(int, text);
 
 -- Recreate spend_tokens function with auth.uid()::text cast
 CREATE OR REPLACE FUNCTION public.spend_tokens(p_cost int, p_idem_key text)
