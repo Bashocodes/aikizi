@@ -49,26 +49,20 @@ export async function callOpenAIREST(
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
   // Build the image content for Responses API
-  let imageContent: any;
+  // The Responses API expects input to be a message with content array
+  let imageData: string;
+  let imageType: 'base64' | 'url';
 
   if (input.base64 && input.mimeType) {
-    // Use base64 encoded image
-    const cleanBase64 = input.base64.replace(/\s+/g, '');
-    imageContent = {
-      type: 'image_url',
-      image_url: {
-        url: `data:${input.mimeType};base64,${cleanBase64}`
-      }
-    };
+    // Use base64 encoded image (strip data URI prefix if present)
+    const cleanBase64 = input.base64.replace(/\s+/g, '').replace(/^data:image\/[^;]+;base64,/, '');
+    imageData = cleanBase64;
+    imageType = 'base64';
     console.log(`${logPrefix} Using base64 image (${input.mimeType}, ${cleanBase64.length} bytes)`);
   } else if (input.imageUrl) {
     // Use image URL
-    imageContent = {
-      type: 'image_url',
-      image_url: {
-        url: input.imageUrl
-      }
-    };
+    imageData = input.imageUrl;
+    imageType = 'url';
     console.log(`${logPrefix} Using image URL: ${input.imageUrl}`);
   } else {
     throw new Error('Either base64+mimeType or imageUrl must be provided');
@@ -77,10 +71,22 @@ export async function callOpenAIREST(
   // Construct the Responses API request
   // Using the new Responses API format for GPT-5
   // Note: Responses API uses 'max_output_tokens' instead of 'max_completion_tokens'
+  // The input must be a message type with content array containing input_text and input_image
   const requestBody: any = {
     model: actualModel,
     instructions: AI_DECODE_PROMPT,
-    input: [imageContent],
+    input: [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image_data: imageData
+          }
+        ]
+      }
+    ],
     store: false,
     max_output_tokens: 16000
   };
@@ -90,8 +96,8 @@ export async function callOpenAIREST(
     model: actualModel,
     bodySize: requestBodyStr.length,
     hasSignal: !!signal,
-    imageType: input.base64 ? 'base64' : 'url',
-    imageSize: input.base64 ? input.base64.length : (input.imageUrl?.length || 0),
+    imageType: imageType,
+    imageSize: imageData.length,
     maxOutputTokens: 16000
   });
 
