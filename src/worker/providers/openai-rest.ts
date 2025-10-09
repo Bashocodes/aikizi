@@ -66,7 +66,9 @@ export async function callOpenAIREST(
   }
 
   // Construct the API request
-  const requestBody = {
+  // GPT-5 models use max_completion_tokens instead of max_tokens
+  const isGPT5 = actualModel.startsWith('gpt-5');
+  const requestBody: any = {
     model: actualModel,
     messages: [
       {
@@ -78,9 +80,14 @@ export async function callOpenAIREST(
         content: [imageContent]
       }
     ],
-    max_tokens: 1500,
     temperature: 0.7
   };
+
+  if (isGPT5) {
+    requestBody.max_completion_tokens = 1500;
+  } else {
+    requestBody.max_tokens = 1500;
+  }
 
   console.log(`${logPrefix} Sending request to OpenAI API`);
 
