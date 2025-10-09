@@ -76,12 +76,13 @@ export async function callOpenAIREST(
 
   // Construct the Responses API request
   // Using the new Responses API format for GPT-5
+  // Note: Responses API uses 'max_output_tokens' instead of 'max_completion_tokens'
   const requestBody: any = {
     model: actualModel,
     instructions: AI_DECODE_PROMPT,
     input: [imageContent],
     store: false,
-    max_completion_tokens: 16000
+    max_output_tokens: 16000
   };
 
   const requestBodyStr = JSON.stringify(requestBody);
@@ -91,7 +92,7 @@ export async function callOpenAIREST(
     hasSignal: !!signal,
     imageType: input.base64 ? 'base64' : 'url',
     imageSize: input.base64 ? input.base64.length : (input.imageUrl?.length || 0),
-    maxTokens: 16000
+    maxOutputTokens: 16000
   });
 
   console.log(`${logPrefix} Sending request to OpenAI Responses API...`);
