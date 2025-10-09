@@ -44,64 +44,17 @@ export async function callOpenAIREST(
   const actualModel = modelMap[input.model] || 'gpt-5';
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
-  // ---- Upload to Files API ----
-  let fileId: string;
+  // ---- Build image block for Responses API ----
+  let imageBlock: any;
 
   if (input.base64 && input.mimeType) {
-    const cleanBase64 = input.base64.replace(/\s+/g, '').replace(/^data:image\/[^;]+;base64,/, '');
-    const binary = atob(cleanBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-    const blob = new Blob([bytes], { type: input.mimeType });
-    const ext = input.mimeType.split('/')[1] || 'png';
-    const formData = new FormData();
-    formData.append('file', blob, `upload.${ext}`);
-    formData.append('purpose', 'vision');
-
-    console.log(`${logPrefix} Uploading base64 image to Files API...`);
-    const uploadStart = Date.now();
-    const uploadRes = await fetch('https://api.openai.com/v1/files', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: formData,
-      signal
-    });
-
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text();
-      throw new Error(`Files API upload failed: ${uploadRes.status} ${errText}`);
-    }
-
-    const uploadJson = await uploadRes.json();
-    fileId = uploadJson.id;
-    console.log(`${logPrefix} File uploaded successfully in ${Date.now() - uploadStart}ms, file_id=${fileId}`);
+    const cleanBase64 = input.base64.replace(/\s+/g, '').replace(/^data:[^;]+;base64,/, '');
+    const dataUri = `data:${input.mimeType};base64,${cleanBase64}`;
+    imageBlock = { type: 'input_image', image_url: dataUri };
+    console.log(`${logPrefix} Using base64 data URI (${dataUri.length} chars)`);
   } else if (input.imageUrl) {
-    console.log(`${logPrefix} Downloading image from URL: ${input.imageUrl}`);
-    const imgRes = await fetch(input.imageUrl, { signal });
-    if (!imgRes.ok) throw new Error(`Failed to download image: ${imgRes.status}`);
-    const imgBlob = await imgRes.blob();
-
-    const formData = new FormData();
-    formData.append('file', imgBlob, 'upload.png');
-    formData.append('purpose', 'vision');
-
-    console.log(`${logPrefix} Uploading URL image to Files API...`);
-    const uploadRes = await fetch('https://api.openai.com/v1/files', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-      body: formData,
-      signal
-    });
-
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text();
-      throw new Error(`Files API upload failed: ${uploadRes.status} ${errText}`);
-    }
-
-    const uploadJson = await uploadRes.json();
-    fileId = uploadJson.id;
-    console.log(`${logPrefix} File uploaded successfully, file_id=${fileId}`);
+    imageBlock = { type: 'input_image', image_url: input.imageUrl };
+    console.log(`${logPrefix} Using image URL: ${input.imageUrl}`);
   } else {
     throw new Error('Either base64+mimeType or imageUrl must be provided');
   }
@@ -116,7 +69,7 @@ export async function callOpenAIREST(
         role: 'user',
         content: [
           { type: 'input_text', text: 'Analyze this image based on the given style and structure.' },
-          { type: 'input_image', image_file: fileId }
+          imageBlock
         ]
       }
     ],
@@ -124,11 +77,17 @@ export async function callOpenAIREST(
     max_output_tokens: 16000
   };
 
+  // Log sanitized preview
+  const preview = JSON.parse(JSON.stringify(requestBody));
+  if (preview.input?.[0]?.content?.[1]?.image_url?.startsWith('data:')) {
+    preview.input[0].content[1].image_url = '<data-uri>';
+  }
+  console.log(`${logPrefix} Request preview`, preview);
+
   const bodyStr = JSON.stringify(requestBody);
   console.log(`${logPrefix} Request prepared (Responses API)`, {
     model: actualModel,
     bodySize: bodyStr.length,
-    fileId,
     maxOutputTokens: 16000
   });
 
