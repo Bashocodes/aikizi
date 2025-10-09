@@ -4,6 +4,7 @@ import { cors } from '../lib/cors';
 import { requireUser } from '../lib/auth';
 import { idemKey } from '../lib/idem';
 import { callGeminiREST } from '../providers/gemini-rest';
+import { callOpenAIREST } from '../providers/openai-rest';
 import type { Env } from '../types';
 
 type Body = {
@@ -109,50 +110,62 @@ export async function decode(env: Env, req: Request, reqId?: string) {
   console.log(`${logPrefix} Starting decode model=${model}`);
 
   const startTime = Date.now();
-  let text: string;
+  let decodeResult: any;
+  let latencyMs: number;
 
   try {
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
 
     try {
-      const prompt = `Analyze this image and return a JSON object with the following structure:
-{
-  "styleCodes": ["--sref 123456789", "--profile abc", "--moodboard xyz"],
-  "tags": ["minimalist", "modern", "clean", "geometric"],
-  "subjects": ["abstract shapes", "architecture", "composition"],
-  "prompts": {
-    "story": "A narrative prompt describing the image's story",
-    "mix": "A Midjourney prompt mixing styles: /imagine prompt: ...",
-    "expand": "An expanded detailed prompt for regeneration",
-    "sound": "A sound design prompt describing the audio atmosphere"
-  }
-}
+      // Determine which provider to use based on model name
+      const isOpenAI = model.startsWith('gpt-');
+      const isGemini = model.startsWith('gemini-');
 
-Focus on:
-- Style codes: Midjourney style references (--sref), profiles, moodboards
-- Tags: Style descriptors, techniques, mood
-- Subjects: Main visual elements
-- Prompts: Creative variations for different use cases
+      if (!isOpenAI && !isGemini) {
+        throw new Error(`Unknown model type: ${model}`);
+      }
 
-Return ONLY valid JSON, no markdown formatting.`;
+      console.log(`${logPrefix} Using ${isOpenAI ? 'OpenAI' : 'Gemini'} provider`);
 
-      const result = await Promise.race([
-        callGeminiREST(env, {
-          base64: body.base64,
-          mimeType: body.mimeType,
-          imageUrl: body.imageUrl,
-          model: model === 'gemini-2.5-flash' ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp',
-          prompt
-        }, abortController.signal),
-        new Promise<never>((_, reject) => {
-          abortController.signal.addEventListener('abort', () => {
-            reject(new Error('DECODE_TIMEOUT'));
-          });
-        })
-      ]);
+      if (isOpenAI) {
+        // Call OpenAI provider
+        const result = await Promise.race([
+          callOpenAIREST(env, {
+            base64: body.base64,
+            mimeType: body.mimeType,
+            imageUrl: body.imageUrl,
+            model: model
+          }, abortController.signal),
+          new Promise<never>((_, reject) => {
+            abortController.signal.addEventListener('abort', () => {
+              reject(new Error('DECODE_TIMEOUT'));
+            });
+          })
+        ]);
 
-      text = result.text;
+        decodeResult = result.result;
+        latencyMs = result.latencyMs;
+      } else {
+        // Call Gemini provider
+        const result = await Promise.race([
+          callGeminiREST(env, {
+            base64: body.base64,
+            mimeType: body.mimeType,
+            imageUrl: body.imageUrl,
+            model: model
+          }, abortController.signal),
+          new Promise<never>((_, reject) => {
+            abortController.signal.addEventListener('abort', () => {
+              reject(new Error('DECODE_TIMEOUT'));
+            });
+          })
+        ]);
+
+        decodeResult = result.result;
+        latencyMs = result.latencyMs;
+      }
+
       clearTimeout(timeoutId);
     } catch (error: any) {
       clearTimeout(timeoutId);
@@ -172,14 +185,14 @@ Return ONLY valid JSON, no markdown formatting.`;
   }
 
   const ms = Date.now() - startTime;
-  console.log(`${logPrefix} Success ms=${ms}`);
+  console.log(`${logPrefix} Success ms=${ms}, latencyMs=${latencyMs}`);
 
   await dbClient.from('decodes').insert({
     user_id: userData.id,
     input_media_id: null,
     model: model,
-    raw_json: { text },
-    normalized_json: { content: text },
+    raw_json: decodeResult,
+    normalized_json: decodeResult,
     cost_tokens: 1,
     private: true
   });
@@ -193,10 +206,13 @@ Return ONLY valid JSON, no markdown formatting.`;
   const finalBalance = updatedBalance?.tokens_balance ?? newBalance;
   console.log(`${logPrefix} Returning final balance: ${finalBalance}`);
 
+  // Format response to match expected structure
+  const responseContent = JSON.stringify(decodeResult);
+
   return cors(json({
     success: true,
     result: {
-      content: text,
+      content: responseContent,
       tokensUsed: 1,
       newBalance: finalBalance
     }
