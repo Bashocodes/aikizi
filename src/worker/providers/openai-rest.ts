@@ -160,15 +160,16 @@ export async function callOpenAIREST(
     model: actualModel,
     instructions: AI_DECODE_PROMPT,
     input: [
-      {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_image',
-            image_file: fileId
-          }
-        ]
+  {
+    type: "message",
+    role: "user",
+    content: [
+      { type: "input_text", text: prompt },
+      { type: "input_image", image: { file_id: fileId } }
+    ]
+  }
+]
+
       }
     ],
     store: false,
