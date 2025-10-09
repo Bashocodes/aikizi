@@ -116,7 +116,7 @@ export async function callOpenAIREST(
         role: 'user',
         content: [
           { type: 'input_text', text: 'Analyze this image based on the given style and structure.' },
-          { type: 'input_image', file: { file_id: fileId } }
+          { type: 'input_image', image_file: fileId }
         ]
       }
     ],
