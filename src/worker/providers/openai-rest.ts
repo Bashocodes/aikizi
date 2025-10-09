@@ -14,7 +14,8 @@ export interface OpenAIDecodeResult {
 }
 
 /**
- * Call OpenAI API with vision capabilities to analyze an image
+ * Call OpenAI Responses API with vision capabilities to analyze an image
+ * Uses the new Responses API for GPT-5 models
  * Supports both base64 encoded images and image URLs
  */
 export async function callOpenAIREST(
@@ -39,7 +40,6 @@ export async function callOpenAIREST(
   }
 
   // Map model names to actual OpenAI model identifiers
-  // Using the actual model names directly - no mapping needed
   const modelMap: Record<string, string> = {
     'gpt-5': 'gpt-5',
     'gpt-5-mini': 'gpt-5-mini',
@@ -48,7 +48,7 @@ export async function callOpenAIREST(
   const actualModel = modelMap[input.model] || 'gpt-5';
   console.log(`${logPrefix} Using model: ${input.model} -> ${actualModel}`);
 
-  // Build the image content based on input type
+  // Build the image content for Responses API
   let imageContent: any;
 
   if (input.base64 && input.mimeType) {
@@ -74,47 +74,32 @@ export async function callOpenAIREST(
     throw new Error('Either base64+mimeType or imageUrl must be provided');
   }
 
-  // Construct the API request
-  // GPT-5 models use max_completion_tokens instead of max_tokens
-  // GPT-5 only supports temperature=1 (default)
-  const isGPT5 = actualModel.startsWith('gpt-5');
+  // Construct the Responses API request
+  // Using the new Responses API format for GPT-5
   const requestBody: any = {
     model: actualModel,
-    messages: [
-      {
-        role: 'system',
-        content: AI_DECODE_PROMPT
-      },
-      {
-        role: 'user',
-        content: [imageContent]
-      }
-    ]
+    instructions: AI_DECODE_PROMPT,
+    input: [imageContent],
+    store: false,
+    max_completion_tokens: 16000
   };
 
-  if (isGPT5) {
-    requestBody.max_completion_tokens = 3000;
-    // GPT-5 only supports temperature=1, so we omit it (uses default)
-  } else {
-    requestBody.max_tokens = 3000;
-    requestBody.temperature = 0.7;
-  }
-
   const requestBodyStr = JSON.stringify(requestBody);
-  console.log(`${logPrefix} Request prepared`, {
+  console.log(`${logPrefix} Request prepared (Responses API)`, {
     model: actualModel,
     bodySize: requestBodyStr.length,
     hasSignal: !!signal,
     imageType: input.base64 ? 'base64' : 'url',
-    imageSize: input.base64 ? input.base64.length : (input.imageUrl?.length || 0)
+    imageSize: input.base64 ? input.base64.length : (input.imageUrl?.length || 0),
+    maxTokens: 16000
   });
 
-  console.log(`${logPrefix} Sending request to OpenAI API...`);
+  console.log(`${logPrefix} Sending request to OpenAI Responses API...`);
   const fetchStart = Date.now();
 
   let response: Response;
   try {
-    response = await fetch('https://api.openai.com/v1/chat/completions', {
+    response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -138,7 +123,7 @@ export async function callOpenAIREST(
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
-    console.error(`${logPrefix} API error: ${response.status} ${response.statusText}`, {
+    console.error(`${logPrefix} Responses API error: ${response.status} ${response.statusText}`, {
       errorPreview: errorText.substring(0, 500),
       errorLength: errorText.length,
       headers: Object.fromEntries(response.headers.entries())
@@ -152,86 +137,88 @@ export async function callOpenAIREST(
       console.error(`${logPrefix} Raw error text:`, errorText);
     }
 
-    throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+    throw new Error(`OpenAI Responses API error: ${response.status} ${response.statusText}`);
   }
 
   const responseData = await response.json();
   console.log(`${logPrefix} Response received`, {
-    hasChoices: Array.isArray(responseData.choices),
-    choicesCount: responseData.choices?.length || 0
+    hasOutput: Array.isArray(responseData.output),
+    outputCount: responseData.output?.length || 0,
+    responseId: responseData.id,
+    object: responseData.object
   });
 
-  // Log complete response structure for debugging
-  const firstChoice = responseData.choices?.[0];
-  if (firstChoice) {
-    console.log(`${logPrefix} First choice structure:`, {
-      finishReason: firstChoice.finish_reason,
-      hasMessage: !!firstChoice.message,
-      messageKeys: firstChoice.message ? Object.keys(firstChoice.message) : [],
-      hasContent: firstChoice.message?.content !== undefined && firstChoice.message?.content !== null,
-      contentType: typeof firstChoice.message?.content,
-      hasRefusal: firstChoice.message?.refusal !== undefined && firstChoice.message?.refusal !== null,
-      refusalValue: firstChoice.message?.refusal,
-      hasText: firstChoice.text !== undefined && firstChoice.text !== null,
-      messageSnippet: firstChoice.message ? JSON.stringify(firstChoice.message).substring(0, 200) : 'no message'
-    });
-  } else {
-    console.error(`${logPrefix} No choices in response`, { responseData });
-    throw new Error('No choices in OpenAI response');
+  // Parse the Responses API output array
+  if (!Array.isArray(responseData.output) || responseData.output.length === 0) {
+    console.error(`${logPrefix} No output items in response`, { responseData });
+    throw new Error('No output in OpenAI Responses API response');
   }
 
-  // Multi-path content extraction strategy
+  // Log all output items for debugging
+  console.log(`${logPrefix} Output items:`, responseData.output.map((item: any) => ({
+    id: item.id,
+    type: item.type,
+    status: item.status,
+    hasContent: Array.isArray(item.content),
+    contentLength: item.content?.length || 0
+  })));
+
+  // Find the message item in the output array
+  const messageItem = responseData.output.find((item: any) => item.type === 'message');
+
+  if (!messageItem) {
+    console.error(`${logPrefix} No message item found in output`, {
+      outputTypes: responseData.output.map((item: any) => item.type)
+    });
+    throw new Error('No message item in OpenAI Responses API output');
+  }
+
+  console.log(`${logPrefix} Message item found`, {
+    id: messageItem.id,
+    status: messageItem.status,
+    role: messageItem.role,
+    hasContent: Array.isArray(messageItem.content),
+    contentCount: messageItem.content?.length || 0
+  });
+
+  // Extract text content from the message item
   let content: string | null = null;
 
-  // Path 1: Standard message.content (GPT-4 and most models)
-  if (firstChoice.message?.content && typeof firstChoice.message.content === 'string') {
-    content = firstChoice.message.content;
-    console.log(`${logPrefix} Content extracted from message.content`);
-  }
-  // Path 2: Content as array (some models return structured content)
-  else if (Array.isArray(firstChoice.message?.content)) {
-    content = firstChoice.message.content
-      .map((item: any) => {
-        if (typeof item === 'string') return item;
-        if (item?.text) return item.text;
-        if (item?.content) return item.content;
-        return '';
-      })
-      .join('\n')
-      .trim();
-    console.log(`${logPrefix} Content extracted from message.content array`);
-  }
-  // Path 3: Legacy text field (older API format)
-  else if (firstChoice.text && typeof firstChoice.text === 'string') {
-    content = firstChoice.text;
-    console.log(`${logPrefix} Content extracted from text field`);
-  }
-  // Path 4: Alternative message.text field
-  else if (firstChoice.message?.text && typeof firstChoice.message.text === 'string') {
-    content = firstChoice.message.text;
-    console.log(`${logPrefix} Content extracted from message.text`);
-  }
+  if (Array.isArray(messageItem.content) && messageItem.content.length > 0) {
+    // Find the output_text content type
+    const textContent = messageItem.content.find((c: any) => c.type === 'output_text');
 
-  // Check for refusal or content filter
-  if (firstChoice.message?.refusal) {
-    console.error(`${logPrefix} Content refused by OpenAI`, {
-      refusal: firstChoice.message.refusal,
-      finishReason: firstChoice.finish_reason
-    });
-    throw new Error(`OpenAI refused to generate content: ${firstChoice.message.refusal}`);
-  }
+    if (textContent && textContent.text) {
+      content = textContent.text;
+      console.log(`${logPrefix} Content extracted from output_text`, {
+        contentLength: content.length
+      });
+    } else {
+      // Fallback: try to extract text from any content item
+      content = messageItem.content
+        .map((c: any) => {
+          if (c.text) return c.text;
+          if (c.content) return c.content;
+          if (typeof c === 'string') return c;
+          return '';
+        })
+        .join('\n')
+        .trim();
 
-  // Check if response was truncated
-  if (firstChoice.finish_reason === 'length') {
-    console.warn(`${logPrefix} Response truncated due to token limit`, {
-      finishReason: firstChoice.finish_reason,
-      hasContent: !!content,
-      contentLength: content?.length || 0
-    });
-    // Still try to parse if we have partial content
-    if (!content) {
-      throw new Error('OpenAI response truncated and no content available');
+      if (content) {
+        console.log(`${logPrefix} Content extracted from fallback method`, {
+          contentLength: content.length
+        });
+      }
     }
+  }
+
+  // Check message status
+  if (messageItem.status !== 'completed') {
+    console.warn(`${logPrefix} Message status is not completed`, {
+      status: messageItem.status,
+      hasContent: !!content
+    });
   }
 
   // Final validation
@@ -240,9 +227,9 @@ export async function callOpenAIREST(
       contentExists: !!content,
       contentType: typeof content,
       contentLength: content?.length || 0,
-      fullChoice: JSON.stringify(firstChoice).substring(0, 500)
+      messageItemStructure: JSON.stringify(messageItem).substring(0, 500)
     });
-    throw new Error('No content in OpenAI response after trying all extraction paths');
+    throw new Error('No content in OpenAI Responses API message item');
   }
 
   console.log(`${logPrefix} Content received`, {
@@ -256,7 +243,8 @@ export async function callOpenAIREST(
   const latencyMs = Date.now() - startTime;
   console.log(`${logPrefix} Decode completed successfully`, {
     latencyMs,
-    model: actualModel
+    model: actualModel,
+    apiType: 'Responses API'
   });
 
   return {
