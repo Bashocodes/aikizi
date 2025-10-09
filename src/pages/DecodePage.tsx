@@ -118,9 +118,10 @@ export function DecodePage() {
     setDecodeError(null);
     setDecodeStatus('decoding');
 
+    const originalBalance = tokenBalance;
     const optimisticBalance = tokenBalance - 1;
     setTokenBalance(optimisticBalance);
-    console.log('[DecodePage] Starting decode flow', { tokenBalance, optimisticBalance, model: selectedModel });
+    console.log('[DecodePage] Starting decode flow', { originalBalance, optimisticBalance, model: selectedModel });
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -237,11 +238,12 @@ export function DecodePage() {
       console.error('[DecodePage] Error in decode flow:', error);
 
       if (error.name === 'AbortError') {
-        console.log('[DecodePage] Decode was aborted by user');
-        setTokenBalance(tokenBalance);
+        console.log('[DecodePage] Decode was aborted by user, restoring original balance');
+        setTokenBalance(originalBalance);
       } else {
         setDecodeError('Failed to decode image. Please try again.');
-        console.log('[DecodePage] Refreshing balance after exception...');
+        console.log('[DecodePage] Network error - restoring balance and refreshing...');
+        setTokenBalance(originalBalance);
         await new Promise(resolve => setTimeout(resolve, 500));
         await refreshTokenBalance();
       }

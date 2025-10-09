@@ -148,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         console.warn('[Auth] No session available for get_balance');
-        return { tokens_balance: 0, plan_name: 'free' };
+        return { tokens_balance: tokenBalance, plan_name: planName };
       }
 
       const response = await api.get('/balance');
@@ -162,7 +162,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return fetchTokenBalance(retryCount + 1);
         }
 
-        return { tokens_balance: 0, plan_name: 'free' };
+        console.warn('[Auth] Balance fetch failed after retries, keeping current balance');
+        return { tokens_balance: tokenBalance, plan_name: planName };
       }
 
       const balance = response.balance ?? 0;
@@ -195,7 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     } catch (err) {
       console.error('[Auth] Unexpected error fetching token balance:', err);
-      return { tokens_balance: 0, plan_name: 'free' };
+      return { tokens_balance: tokenBalance, plan_name: planName };
     }
   };
 
@@ -205,9 +206,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       lastBalanceFetchRef.current = 0;
       const balance = await fetchTokenBalance(0, true);
-      setTokenBalance(balance.tokens_balance);
-      setPlanName(balance.plan_name);
-      console.log('[Auth] Token balance refreshed:', balance.tokens_balance);
+
+      if (balance.tokens_balance !== tokenBalance || balance.plan_name !== planName) {
+        setTokenBalance(balance.tokens_balance);
+        setPlanName(balance.plan_name);
+        console.log('[Auth] Token balance refreshed:', balance.tokens_balance);
+      } else {
+        console.log('[Auth] Balance unchanged:', balance.tokens_balance);
+      }
     } catch (err) {
       console.error('[Auth] Error refreshing token balance:', err);
     } finally {
