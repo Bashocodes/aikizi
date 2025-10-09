@@ -67,6 +67,7 @@ export async function callOpenAIREST(
 
   // Construct the API request
   // GPT-5 models use max_completion_tokens instead of max_tokens
+  // GPT-5 only supports temperature=1 (default)
   const isGPT5 = actualModel.startsWith('gpt-5');
   const requestBody: any = {
     model: actualModel,
@@ -79,14 +80,15 @@ export async function callOpenAIREST(
         role: 'user',
         content: [imageContent]
       }
-    ],
-    temperature: 0.7
+    ]
   };
 
   if (isGPT5) {
     requestBody.max_completion_tokens = 1500;
+    // GPT-5 only supports temperature=1, so we omit it (uses default)
   } else {
     requestBody.max_tokens = 1500;
+    requestBody.temperature = 0.7;
   }
 
   console.log(`${logPrefix} Sending request to OpenAI API`);
