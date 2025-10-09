@@ -15,7 +15,7 @@ type Body = {
 };
 
 const ALLOWED_MODELS = ['gpt-5', 'gpt-5-mini', 'gemini-2.5-pro', 'gemini-2.5-flash'];
-const DECODE_TIMEOUT_MS = 50000;
+const DECODE_TIMEOUT_MS = 120000; // 120 seconds for GPT-5 reasoning models
 
 export async function decode(env: Env, req: Request, reqId?: string) {
   const logPrefix = reqId ? `[${reqId}] [decode]` : '[decode]';
@@ -115,7 +115,12 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
   try {
     const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), DECODE_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => {
+      console.log(`${logPrefix} Timeout triggered after ${DECODE_TIMEOUT_MS}ms, aborting...`);
+      abortController.abort();
+    }, DECODE_TIMEOUT_MS);
+
+    console.log(`${logPrefix} Timeout set to ${DECODE_TIMEOUT_MS}ms`);
 
     try {
       // Determine which provider to use based on model name
@@ -130,6 +135,9 @@ export async function decode(env: Env, req: Request, reqId?: string) {
 
       if (isOpenAI) {
         // Call OpenAI provider
+        console.log(`${logPrefix} Calling OpenAI API with model=${model}`);
+        const providerStart = Date.now();
+
         const result = await Promise.race([
           callOpenAIREST(env, {
             base64: body.base64,
@@ -139,11 +147,14 @@ export async function decode(env: Env, req: Request, reqId?: string) {
           }, abortController.signal),
           new Promise<never>((_, reject) => {
             abortController.signal.addEventListener('abort', () => {
+              const elapsed = Date.now() - providerStart;
+              console.log(`${logPrefix} Abort signal fired after ${elapsed}ms`);
               reject(new Error('DECODE_TIMEOUT'));
             });
           })
         ]);
 
+        console.log(`${logPrefix} OpenAI provider returned successfully`);
         decodeResult = result.result;
         latencyMs = result.latencyMs;
       } else {
@@ -171,7 +182,7 @@ export async function decode(env: Env, req: Request, reqId?: string) {
       clearTimeout(timeoutId);
       if (error.message === 'DECODE_TIMEOUT') {
         const ms = Date.now() - startTime;
-        console.log(`${logPrefix} Timeout ms=${ms}`);
+        console.log(`${logPrefix} Timeout after ${ms}ms (limit: ${DECODE_TIMEOUT_MS}ms)`);
         const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
         return cors(json({ success: false, error: 'decode timeout', newBalance: refundedBalance }, 504));
       }
@@ -179,7 +190,11 @@ export async function decode(env: Env, req: Request, reqId?: string) {
     }
   } catch (error: any) {
     const ms = Date.now() - startTime;
-    console.error(`${logPrefix} Provider error ms=${ms}`);
+    console.error(`${logPrefix} Provider error after ${ms}ms`, {
+      message: error.message,
+      name: error.name,
+      stack: error.stack?.substring(0, 200)
+    });
     const refundedBalance = await refundToken(dbClient, userData.id, logPrefix);
     return cors(json({ success: false, error: 'internal error', newBalance: refundedBalance }, 500));
   }

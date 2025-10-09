@@ -29,6 +29,15 @@ export async function callOpenAIREST(
     throw new Error('OPENAI_API_KEY is not configured');
   }
 
+  // Verify API key format
+  const keyPrefix = env.OPENAI_API_KEY.substring(0, 7);
+  console.log(`${logPrefix} API key loaded: ${keyPrefix}... (length: ${env.OPENAI_API_KEY.length})`);
+
+  if (!env.OPENAI_API_KEY.startsWith('sk-')) {
+    console.error(`${logPrefix} Invalid API key format - should start with 'sk-'`);
+    throw new Error('Invalid OPENAI_API_KEY format');
+  }
+
   // Map model names to actual OpenAI model identifiers
   // Using the actual model names directly - no mapping needed
   const modelMap: Record<string, string> = {
@@ -91,23 +100,58 @@ export async function callOpenAIREST(
     requestBody.temperature = 0.7;
   }
 
-  console.log(`${logPrefix} Sending request to OpenAI API`);
-
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify(requestBody),
-    signal
+  const requestBodyStr = JSON.stringify(requestBody);
+  console.log(`${logPrefix} Request prepared`, {
+    model: actualModel,
+    bodySize: requestBodyStr.length,
+    hasSignal: !!signal,
+    imageType: input.base64 ? 'base64' : 'url',
+    imageSize: input.base64 ? input.base64.length : (input.imageUrl?.length || 0)
   });
+
+  console.log(`${logPrefix} Sending request to OpenAI API...`);
+  const fetchStart = Date.now();
+
+  let response: Response;
+  try {
+    response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+      },
+      body: requestBodyStr,
+      signal
+    });
+
+    const fetchDuration = Date.now() - fetchStart;
+    console.log(`${logPrefix} Fetch completed in ${fetchDuration}ms, status: ${response.status}`);
+  } catch (fetchError: any) {
+    const fetchDuration = Date.now() - fetchStart;
+    console.error(`${logPrefix} Fetch failed after ${fetchDuration}ms`, {
+      error: fetchError.message,
+      name: fetchError.name,
+      cause: fetchError.cause
+    });
+    throw fetchError;
+  }
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
     console.error(`${logPrefix} API error: ${response.status} ${response.statusText}`, {
-      errorPreview: errorText.substring(0, 300)
+      errorPreview: errorText.substring(0, 500),
+      errorLength: errorText.length,
+      headers: Object.fromEntries(response.headers.entries())
     });
+
+    // Try to parse error as JSON for more details
+    try {
+      const errorJson = JSON.parse(errorText);
+      console.error(`${logPrefix} Parsed error:`, errorJson);
+    } catch {
+      console.error(`${logPrefix} Raw error text:`, errorText);
+    }
+
     throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
   }
 
