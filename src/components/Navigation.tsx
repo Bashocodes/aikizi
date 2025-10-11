@@ -1,12 +1,14 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { Moon, Sun, Menu, X, Coins } from 'lucide-react';
+import { useBackgroundEffects } from './DotGridBackground';
+import { Moon, Sun, Menu, X, Coins, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 
 export function Navigation() {
   const { user, tokenBalance, authReady, signInWithGoogle, signOut } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { enabled: bgEffectsEnabled, toggle: toggleBgEffects } = useBackgroundEffects();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -91,6 +93,17 @@ export function Navigation() {
               ) : (
                 <Moon className="w-5 h-5 text-gray-700" />
               )}
+            </button>
+
+            <button
+              onClick={toggleBgEffects}
+              className={`p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors ${
+                !bgEffectsEnabled ? 'opacity-50' : ''
+              }`}
+              aria-label="Toggle background effects"
+              title={bgEffectsEnabled ? 'Disable background effects' : 'Enable background effects'}
+            >
+              <Sparkles className={`w-5 h-5 ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`} />
             </button>
 
             {authReady && user ? (
@@ -226,6 +239,15 @@ export function Navigation() {
               >
                 {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
                 {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+              </button>
+              <button
+                onClick={toggleBgEffects}
+                className={`flex items-center gap-2 text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white font-medium ${
+                  !bgEffectsEnabled ? 'opacity-50' : ''
+                }`}
+              >
+                <Sparkles className="w-5 h-5" />
+                {bgEffectsEnabled ? 'Disable Effects' : 'Enable Effects'}
               </button>
               {authReady && user ? (
                 null
