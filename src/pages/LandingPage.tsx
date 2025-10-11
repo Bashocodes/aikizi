@@ -1,12 +1,9 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { useTheme } from '../contexts/ThemeContext';
-import { DotGridBackground } from '../components/DotGridBackground';
 import { Sparkles, Image, Lock } from 'lucide-react';
 
 export function LandingPage() {
   const { user, authReady, signInWithGoogle } = useAuth();
-  const { theme } = useTheme();
   const navigate = useNavigate();
 
   const handleExplore = () => {
@@ -26,17 +23,8 @@ export function LandingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-100 to-gray-200 dark:from-gray-950 dark:via-gray-900 dark:to-gray-800 relative overflow-hidden">
-      <DotGridBackground
-        dotSize={4}
-        gap={24}
-        baseColor={theme === 'dark' ? '#ffffff' : '#000000'}
-        activeColor="#5227FF"
-        proximity={120}
-        shockRadius={250}
-        shockStrength={5}
-      />
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 relative">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-100 to-gray-200 dark:from-gray-950 dark:via-gray-900 dark:to-gray-800">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="text-center mb-20">
           <h1 className="text-6xl md:text-7xl font-bold text-gray-900 dark:text-white mb-6 tracking-tight">
             Decode Style.<br />Build Your Visual Library.
@@ -62,7 +50,7 @@ export function LandingPage() {
           </div>
         </div>
 
-        <div className="grid md:grid-cols-3 gap-8 mb-20 relative">
+        <div className="grid md:grid-cols-3 gap-8 mb-20">
           <div className="backdrop-blur-lg bg-white/70 dark:bg-gray-900/70 rounded-2xl p-8 border border-gray-200 dark:border-gray-700 shadow-xl">
             <div className="w-12 h-12 bg-gray-900 dark:bg-white rounded-lg flex items-center justify-center mb-4">
               <Sparkles className="w-6 h-6 text-white dark:text-gray-900" />
