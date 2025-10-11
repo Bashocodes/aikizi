@@ -38,7 +38,7 @@ export function LandingPage() {
               disabled={!authReady}
               className="px-8 py-4 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-lg font-semibold text-lg hover:bg-gray-800 dark:hover:bg-gray-100 transition-all transform hover:scale-105 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
             >
-              {authReady ? 'Explore after Sign-In' : 'Loading...'}
+              {authReady ? 'Explore' : 'Loading...'}
             </button>
             <button
               onClick={handleDecode}
