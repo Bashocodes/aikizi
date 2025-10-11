@@ -1,35 +1,81 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { gsap } from 'gsap';
+import './DotGridBackground.css';
 
-interface DotGridBackgroundProps {
-  density?: 'cozy' | 'default' | 'roomy';
-  opacity?: number;
-  mask?: boolean | 'radial' | 'none';
-  parallax?: boolean;
-  zIndex?: number;
-  inset?: string;
-  className?: string;
-}
-
-const DENSITY_MAP = {
-  cozy: 16,
-  default: 24,
-  roomy: 32,
+const throttle = (func: (...args: any[]) => void, limit: number) => {
+  let lastCall = 0;
+  return function (this: any, ...args: any[]) {
+    const now = performance.now();
+    if (now - lastCall >= limit) {
+      lastCall = now;
+      func.apply(this, args);
+    }
+  };
 };
 
+interface Dot {
+  cx: number;
+  cy: number;
+  xOffset: number;
+  yOffset: number;
+  _inertiaApplied: boolean;
+}
+
+export interface DotGridBackgroundProps {
+  dotSize?: number;
+  gap?: number;
+  baseColor?: string;
+  activeColor?: string;
+  proximity?: number;
+  speedTrigger?: number;
+  shockRadius?: number;
+  shockStrength?: number;
+  maxSpeed?: number;
+  resistance?: number;
+  returnDuration?: number;
+  className?: string;
+  style?: React.CSSProperties;
+}
+
+function hexToRgb(hex: string) {
+  const m = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+  if (!m) return { r: 0, g: 0, b: 0 };
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+
 export function DotGridBackground({
-  density = 'default',
-  opacity,
-  mask = 'none',
-  parallax = false,
-  zIndex = -1,
-  inset = '0',
+  dotSize = 4,
+  gap = 24,
+  baseColor = '#000000',
+  activeColor = '#5227FF',
+  proximity = 120,
+  speedTrigger = 100,
+  shockRadius = 250,
+  shockStrength = 5,
+  maxSpeed = 5000,
+  resistance = 750,
+  returnDuration = 1.5,
   className = '',
+  style
 }: DotGridBackgroundProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [transform, setTransform] = useState({ x: 0, y: 0 });
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dotsRef = useRef<Dot[]>([]);
+  const pointerRef = useRef({
+    x: 0, y: 0, vx: 0, vy: 0, speed: 0, lastTime: 0, lastX: 0, lastY: 0
+  });
   const [effectsEnabled, setEffectsEnabled] = useState(true);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
-  const rafRef = useRef<number | null>(null);
+
+  const baseRgb = useMemo(() => hexToRgb(baseColor), [baseColor]);
+  const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor]);
+
+  const circlePath = useMemo(() => {
+    if (typeof window === 'undefined' || !window.Path2D) return null;
+    const p = new Path2D();
+    p.arc(0, 0, dotSize / 2, 0, Math.PI * 2);
+    return p;
+  }, [dotSize]);
 
   useEffect(() => {
     const stored = localStorage.getItem('aikizi-bg-effects');
@@ -42,68 +88,227 @@ export function DotGridBackground({
 
     const handler = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
     mediaQuery.addEventListener('change', handler);
-    return () => mediaQuery.removeEventListener('change', handler);
+
+    const storageHandler = () => {
+      const stored = localStorage.getItem('aikizi-bg-effects');
+      if (stored !== null) {
+        setEffectsEnabled(stored === 'true');
+      }
+    };
+    window.addEventListener('storage', storageHandler);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handler);
+      window.removeEventListener('storage', storageHandler);
+    };
   }, []);
 
-  useEffect(() => {
-    if (!parallax || !effectsEnabled || prefersReducedMotion) {
-      setTransform({ x: 0, y: 0 });
-      return;
+  const buildGrid = useCallback(() => {
+    const wrap = wrapperRef.current;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas) return;
+
+    const { width, height } = wrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = Math.max(1, Math.floor(width * dpr));
+    canvas.height = Math.max(1, Math.floor(height * dpr));
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.scale(dpr, dpr);
+
+    const cols = Math.floor((width + gap) / (dotSize + gap));
+    const rows = Math.floor((height + gap) / (dotSize + gap));
+    const cell = dotSize + gap;
+
+    const gridW = cell * cols - gap;
+    const gridH = cell * rows - gap;
+
+    const extraX = width - gridW;
+    const extraY = height - gridH;
+
+    const startX = extraX / 2 + dotSize / 2;
+    const startY = extraY / 2 + dotSize / 2;
+
+    const dots: Dot[] = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const cx = startX + x * cell;
+        const cy = startY + y * cell;
+        dots.push({ cx, cy, xOffset: 0, yOffset: 0, _inertiaApplied: false });
+      }
     }
+    dotsRef.current = dots;
+  }, [dotSize, gap]);
 
-    const handlePointerMove = (e: PointerEvent) => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
+  useEffect(() => {
+    if (!circlePath || !effectsEnabled) return;
+    let rafId: number;
+    const proxSq = proximity * proximity;
+
+    const draw = () => {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!canvas || !ctx) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const { x: px, y: py } = pointerRef.current;
+
+      for (const dot of dotsRef.current) {
+        const ox = dot.cx + dot.xOffset;
+        const oy = dot.cy + dot.yOffset;
+        const dx = dot.cx - px;
+        const dy = dot.cy - py;
+        const dsq = dx * dx + dy * dy;
+
+        let style = baseColor;
+        if (dsq <= proxSq) {
+          const dist = Math.sqrt(dsq);
+          const t = 1 - dist / proximity;
+          const r = Math.round(baseRgb.r + (activeRgb.r - baseRgb.r) * t);
+          const g = Math.round(baseRgb.g + (activeRgb.g - baseRgb.g) * t);
+          const b = Math.round(baseRgb.b + (activeRgb.b - baseRgb.b) * t);
+          style = `rgb(${r},${g},${b})`;
+        }
+
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.fillStyle = style;
+        ctx.fill(circlePath);
+        ctx.restore();
       }
 
-      rafRef.current = requestAnimationFrame(() => {
-        const x = (e.clientX / window.innerWidth - 0.5) * 6;
-        const y = (e.clientY / window.innerHeight - 0.5) * 6;
-        setTransform({ x, y });
-      });
+      rafId = requestAnimationFrame(draw);
     };
 
-    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+    draw();
+    return () => cancelAnimationFrame(rafId);
+  }, [proximity, baseColor, activeRgb, baseRgb, circlePath, effectsEnabled]);
+
+  useEffect(() => {
+    buildGrid();
+    let ro: ResizeObserver | null = null;
+    if ('ResizeObserver' in window) {
+      ro = new ResizeObserver(buildGrid);
+      wrapperRef.current && ro.observe(wrapperRef.current);
+    } else {
+      window.addEventListener('resize', buildGrid);
+    }
     return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
+      if (ro) ro.disconnect();
+      else window.removeEventListener('resize', buildGrid);
+    };
+  }, [buildGrid]);
+
+  useEffect(() => {
+    if (!effectsEnabled || prefersReducedMotion) return;
+
+    const onMove = (e: MouseEvent) => {
+      const now = performance.now();
+      const pr = pointerRef.current;
+      const dt = pr.lastTime ? now - pr.lastTime : 16;
+      const dx = e.clientX - pr.lastX;
+      const dy = e.clientY - pr.lastY;
+      let vx = (dx / dt) * 1000;
+      let vy = (dy / dt) * 1000;
+      let speed = Math.hypot(vx, vy);
+      if (speed > maxSpeed) {
+        const scale = maxSpeed / speed;
+        vx *= scale; vy *= scale; speed = maxSpeed;
+      }
+      pr.lastTime = now; pr.lastX = e.clientX; pr.lastY = e.clientY;
+      pr.vx = vx; pr.vy = vy; pr.speed = speed;
+
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      pr.x = e.clientX - rect.left;
+      pr.y = e.clientY - rect.top;
+
+      for (const dot of dotsRef.current) {
+        const dist = Math.hypot(dot.cx - pr.x, dot.cy - pr.y);
+        if (speed > speedTrigger && dist < proximity && !dot._inertiaApplied) {
+          dot._inertiaApplied = true;
+          gsap.killTweensOf(dot);
+          const pushX = (dot.cx - pr.x) * 0.15 + vx * 0.005;
+          const pushY = (dot.cy - pr.y) * 0.15 + vy * 0.005;
+
+          gsap.to(dot, {
+            xOffset: pushX,
+            yOffset: pushY,
+            duration: 0.3,
+            ease: 'power2.out',
+            onComplete: () => {
+              gsap.to(dot, {
+                xOffset: 0,
+                yOffset: 0,
+                duration: returnDuration,
+                ease: 'elastic.out(1,0.75)',
+                onComplete: () => {
+                  dot._inertiaApplied = false;
+                }
+              });
+            }
+          });
+        }
       }
     };
-  }, [parallax, effectsEnabled, prefersReducedMotion]);
+
+    const onClick = (e: MouseEvent) => {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+
+      for (const dot of dotsRef.current) {
+        const dist = Math.hypot(dot.cx - cx, dot.cy - cy);
+        if (dist < shockRadius && !dot._inertiaApplied) {
+          dot._inertiaApplied = true;
+          gsap.killTweensOf(dot);
+          const falloff = Math.max(0, 1 - dist / shockRadius);
+          const pushX = (dot.cx - cx) * shockStrength * falloff;
+          const pushY = (dot.cy - cy) * shockStrength * falloff;
+
+          gsap.to(dot, {
+            xOffset: pushX,
+            yOffset: pushY,
+            duration: 0.3,
+            ease: 'power2.out',
+            onComplete: () => {
+              gsap.to(dot, {
+                xOffset: 0,
+                yOffset: 0,
+                duration: returnDuration,
+                ease: 'elastic.out(1,0.75)',
+                onComplete: () => {
+                  dot._inertiaApplied = false;
+                }
+              });
+            }
+          });
+        }
+      }
+    };
+
+    const throttledMove = throttle(onMove, 50);
+    window.addEventListener('mousemove', throttledMove, { passive: true });
+    window.addEventListener('click', onClick);
+    return () => {
+      window.removeEventListener('mousemove', throttledMove);
+      window.removeEventListener('click', onClick);
+    };
+  }, [effectsEnabled, prefersReducedMotion, maxSpeed, speedTrigger, proximity, resistance, returnDuration, shockRadius, shockStrength]);
 
   if (!effectsEnabled) {
     return null;
   }
 
-  const gridSize = DENSITY_MAP[density];
-  const dotSize = 1.5;
-  const finalOpacity = opacity !== undefined ? opacity :
-    document.documentElement.classList.contains('dark') ? 0.08 : 0.06;
-
-  const shouldApplyMask = mask === true || mask === 'radial';
-
-  const style: React.CSSProperties = {
-    position: 'absolute',
-    inset,
-    zIndex,
-    pointerEvents: 'none',
-    backgroundImage: `radial-gradient(circle, currentColor ${dotSize}px, transparent ${dotSize}px)`,
-    backgroundSize: `${gridSize}px ${gridSize}px`,
-    opacity: finalOpacity,
-    transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
-    willChange: parallax && effectsEnabled && !prefersReducedMotion ? 'transform' : 'auto',
-    maskImage: shouldApplyMask ? 'radial-gradient(circle at center, black 40%, transparent 70%)' : undefined,
-    WebkitMaskImage: shouldApplyMask ? 'radial-gradient(circle at center, black 40%, transparent 70%)' : undefined,
-  };
-
   return (
-    <div
-      ref={containerRef}
-      className={`dot-grid-background text-gray-900 dark:text-white ${className}`}
-      style={style}
-      aria-hidden="true"
-    />
+    <section className={`dot-grid ${className}`} style={style} aria-hidden="true">
+      <div ref={wrapperRef} className="dot-grid__wrap">
+        <canvas ref={canvasRef} className="dot-grid__canvas" />
+      </div>
+    </section>
   );
 }
 
